@@ -1,9 +1,9 @@
 ;;; dict-tree.el --- Dictionary data structure  -*- lexical-binding: t; -*-
 
-;; Copyright (C) 2004-2015, 2017  Free Software Foundation, Inc
+;; Copyright (C) 2004-2015, 2017-2019  Free Software Foundation, Inc
 
 ;; Author: Toby Cubitt <toby-predictive@dr-qubit.org>
-;; Version: 0.14
+;; Version: 0.16
 ;; Keywords: extensions, matching, data structures
 ;;           trie, tree, dictionary, completion, regexp
 ;; Package-Requires: ((trie "0.3") (tNFA "0.1.1") (heap "0.3"))
@@ -90,6 +90,9 @@
 ;;; Code:
 
 (eval-when-compile (require 'cl))
+(require 'cl-lib)
+(require 'gv)
+
 (require 'trie)
 (require 'tNFA)
 
@@ -133,6 +136,16 @@ If START or END is negative, it counts from the end."
   (if (eq selective-display t)
       (re-search-forward "[\n\C-m]" nil 'no-error (1- line))
     (forward-line (1- line))))
+
+
+(defmacro dictree--if-lexical-binding (then else)
+  "If lexical binding is in effect, evaluate THEN, otherwise ELSE."
+  (declare (indent 1) (debug t))
+  (if (let ((tempvar nil)
+	    (f (let ((tempvar t)) (lambda () tempvar))))
+	tempvar  ;; shut up "unused lexical variable" byte-compiler warning
+	(funcall f))
+      then else))
 
 
 
@@ -210,27 +223,29 @@ If START or END is negative, it counts from the end."
 ;;                     Wrapping functions
 
 ;; return wrapped insfun to deal with data wrapping
-(trie--if-lexical-binding
-    (defun dictree--wrap-insfun (insfun)  ; INTERNAL USE ONLY
-      (lambda (new old)
-	(dictree--cell-set-data old (funcall insfun
-					     (dictree--cell-data new)
-					     (dictree--cell-data old)))
-	old))
+(defun dictree--wrap-insfun (insfun)  ; INTERNAL USE ONLY
+  (lambda (new old)
+    (dictree--cell-set-data old (funcall insfun
+					 (dictree--cell-data new)
+					 (dictree--cell-data old)))
+    old))
+
+(dictree--if-lexical-binding nil
   (defun dictree--wrap-insfun (insfun)  ; INTERNAL USE ONLY
     `(lambda (new old)
        (dictree--cell-set-data old (,insfun (dictree--cell-data new)
-					    (dictree--cell-data old)))
+  					    (dictree--cell-data old)))
        old)))
 
 
 ;; return wrapped rankfun to deal with data wrapping
-(trie--if-lexical-binding
-    (defun dictree--wrap-rankfun (rankfun)  ; INTERNAL USE ONLY
-      (lambda (a b)
-	(funcall rankfun
-		 (cons (car a) (dictree--cell-data (cdr a)))
-		 (cons (car b) (dictree--cell-data (cdr b))))))
+(defun dictree--wrap-rankfun (rankfun)  ; INTERNAL USE ONLY
+  (lambda (a b)
+    (funcall rankfun
+	     (cons (car a) (dictree--cell-data (cdr a)))
+	     (cons (car b) (dictree--cell-data (cdr b))))))
+
+(dictree--if-lexical-binding nil
   (defun dictree--wrap-rankfun (rankfun)  ; INTERNAL USE ONLY
     `(lambda (a b)
        (,rankfun (cons (car a) (dictree--cell-data (cdr a)))
@@ -238,23 +253,24 @@ If START or END is negative, it counts from the end."
 
 
 ;; return wrapped rankfun to ignore regexp grouping data
-(trie--if-lexical-binding
-    (defun dictree--wrap-regexp-rankfun (rankfun)
-      (lambda (a b)
-	;; if car of argument contains a key+group list rather than a straight
-	;; key, remove group list
-	;; FIXME: the test for straight key, below, will fail if the key is a
-	;;        list, and the first element of the key is itself a list
-	;;        (there might be no easy way to fully fix this...)
-	(if (or (atom (car a))
-		(and (listp (car a)) (not (sequencep (caar a)))))
-	    (setq a (cons (car a) (dictree--cell-data (cdr a))))
-	  (setq a (cons (caar a) (dictree--cell-data (cdr a)))))
-	(if (or (atom (car b))
-		(and (listp (car b)) (not (sequencep (caar b)))))
-	    (setq b (cons (car b) (dictree--cell-data (cdr b))))
-	  (setq b (cons (caar b) (dictree--cell-data (cdr b)))))
-	(funcall rankfun a b)))
+(defun dictree--wrap-regexp-rankfun (rankfun)
+  (lambda (a b)
+    ;; if car of argument contains a key+group list rather than a straight
+    ;; key, remove group list
+    ;; FIXME: the test for straight key, below, will fail if the key is a
+    ;;        list, and the first element of the key is itself a list
+    ;;        (there might be no easy way to fully fix this...)
+    (if (or (atom (car a))
+	    (and (listp (car a)) (not (sequencep (caar a)))))
+	(setq a (cons (car a) (dictree--cell-data (cdr a))))
+      (setq a (cons (caar a) (dictree--cell-data (cdr a)))))
+    (if (or (atom (car b))
+	    (and (listp (car b)) (not (sequencep (caar b)))))
+	(setq b (cons (car b) (dictree--cell-data (cdr b))))
+      (setq b (cons (caar b) (dictree--cell-data (cdr b)))))
+    (funcall rankfun a b)))
+
+(dictree--if-lexical-binding nil
   (defun dictree--wrap-regexp-rankfun (rankfun)
     `(lambda (a b)
        ;; if car of argument contains a key+group list rather than a straight
@@ -263,85 +279,118 @@ If START or END is negative, it counts from the end."
        ;;        list, and the first element of the key is itself a list
        ;;        (there might be no easy way to fully fix this...)
        (if (or (atom (car a))
-	       (and (listp (car a)) (not (sequencep (caar a)))))
-	    (setq a (cons (car a) (dictree--cell-data (cdr a))))
+  	       (and (listp (car a)) (not (sequencep (caar a)))))
+	   (setq a (cons (car a) (dictree--cell-data (cdr a))))
   	 (setq a (cons (caar a) (dictree--cell-data (cdr a)))))
        (if (or (atom (car b))
-	       (and (listp (car b)) (not (sequencep (caar b)))))
-	   (setq b (cons (car b) (dictree--cell-data (cdr b))))
+  	       (and (listp (car b)) (not (sequencep (caar b)))))
+  	   (setq b (cons (car b) (dictree--cell-data (cdr b))))
   	 (setq b (cons (caar b) (dictree--cell-data (cdr b)))))
        (,rankfun a b))))
 
 ;; return wrapped sortfun to ignore regexp grouping data
-(trie--if-lexical-binding
-    (defun dictree--wrap-regexp-sortfun (cmpfun &optional reverse)
-	(let ((sortfun (trie-construct-sortfun cmpfun reverse)))
-	  (lambda (a b)
-	    ;; if car of argument contains a key+group list rather than a
-	    ;; straight key, remove group list
-	    ;; FIXME: the test for straight key, below, will fail if the key
-	    ;;        is a list, and the first element of the key is itself a
-	    ;;        list (there might be no easy way to fully fix this...)
-	    (if (or (atom (car a))
-		    (and (listp (car a)) (not (sequencep (caar a)))))
-		(setq a (car a))
-	      (setq a (caar a)))
-	    (if (or (atom (car b))
-		    (and (listp (car b)) (not (sequencep (caar b)))))
-		(setq b (car b))
-	      (setq b (caar b)))
-	    (funcall sortfun a b))))
+(defun dictree--wrap-regexp-sortfun (cmpfun &optional reverse)
+  (let ((sortfun (trie-construct-sortfun cmpfun reverse)))
+    (lambda (a b)
+      ;; if car of argument contains a key+group list rather than a
+      ;; straight key, remove group list
+      ;; FIXME: the test for straight key, below, will fail if the key
+      ;;        is a list, and the first element of the key is itself a
+      ;;        list (there might be no easy way to fully fix this...)
+      (if (or (atom (car a))
+	      (and (listp (car a)) (not (sequencep (caar a)))))
+	  (setq a (car a))
+	(setq a (caar a)))
+      (if (or (atom (car b))
+	      (and (listp (car b)) (not (sequencep (caar b)))))
+	  (setq b (car b))
+	(setq b (caar b)))
+      (funcall sortfun a b))))
+
+(dictree--if-lexical-binding nil
   (defun dictree--wrap-regexp-sortfun (cmpfun &optional reverse)
     (let ((sortfun (trie-construct-sortfun cmpfun reverse)))
       `(lambda (a b)
-	 ;; if car of argument contains a key+group list rather than a
-	 ;; straight key, remove group list
-	 ;; FIXME: the test for straight key, below, will fail if the key
-	 ;;        is a list, and the first element of the key is itself a
-	 ;;        list (there might be no easy way to fully fix this...)
-	 (if (or (atom (car a))
-		 (and (listp (car a)) (not (sequencep (caar a)))))
-	     (setq a (car a))
-	   (setq a (caar a)))
-	 (if (or (atom (car b))
-		 (and (listp (car b)) (not (sequencep (caar b)))))
-	     (setq b (car b))
-	   (setq b (caar b)))
-	 (,sortfun a b)))))
+  	 ;; if car of argument contains a key+group list rather than a
+  	 ;; straight key, remove group list
+  	 ;; FIXME: the test for straight key, below, will fail if the key
+  	 ;;        is a list, and the first element of the key is itself a
+  	 ;;        list (there might be no easy way to fully fix this...)
+  	 (if (or (atom (car a))
+  		 (and (listp (car a)) (not (sequencep (caar a)))))
+  	     (setq a (car a))
+  	   (setq a (caar a)))
+  	 (if (or (atom (car b))
+  		 (and (listp (car b)) (not (sequencep (caar b)))))
+  	     (setq b (car b))
+  	   (setq b (caar b)))
+  	 (,sortfun a b)))))
 
 
-;; return wrapped rankfun to ignore fuzzy query distance data
-(trie--if-lexical-binding
-    (defun dictree--wrap-fuzzy-rankfun (rankfun)  ; INTERNAL USE ONLY
-      (lambda (a b)
-	(funcall rankfun
-		 (cons (nth 0 (car a)) (dictree--cell-data (cdr a)))
-		 (cons (nth 0 (car b)) (dictree--cell-data (cdr b))))))
+;; return wrapped rankfun to deal with data wrapping and ignore fuzzy query
+;; distance data. Note: works for both fuzzy-matching and fuzzy-completion.
+(defun dictree--wrap-fuzzy-rankfun (rankfun)  ; INTERNAL USE ONLY
+  (lambda (a b)
+    (funcall rankfun
+	     (cons (car a) (dictree--cell-data (cdr a)))
+	     (cons (car b) (dictree--cell-data (cdr b))))))
+
+(dictree--if-lexical-binding nil
   (defun dictree--wrap-fuzzy-rankfun (rankfun)  ; INTERNAL USE ONLY
     `(lambda (a b)
-       (,rankfun (cons (nth 0 (car a)) (dictree--cell-data (cdr a)))
-		 (cons (nth 0 (car b)) (dictree--cell-data (cdr b)))))))
+       (,rankfun (cons (car a) (dictree--cell-data (cdr a)))
+		 (cons (car b) (dictree--cell-data (cdr b)))))))
+
+
+(defun dictree--construct-fuzzy-trie-rankfun (rankfun &optional dict)
+  (cond
+   ((eq rankfun 'distance) t)
+   ((and (or (eq (car-safe rankfun) t)
+	     (eq (car-safe rankfun) 'distance))
+	 (or (eq (cdr-safe rankfun) t)
+	     (eq (cdr-safe rankfun) 'ranked)))
+    (cons t (dictree--wrap-rankfun (dictree-rank-function dict))))
+   ((or (eq (car-safe rankfun) t)
+	(eq (car-safe rankfun) 'distance))
+    (cons t (dictree--wrap-fuzzy-rankfun (cdr rankfun))))
+   ((or (eq rankfun t)
+	(eq rankfun 'ranked))
+    (dictree--wrap-fuzzy-rankfun (dictree-rank-function dict)))
+   (rankfun (dictree--wrap-fuzzy-rankfun rankfun))))
+
+(defun dictree--construct-fuzzy-match-rankfun (rankfun dict)
+  (trie--construct-fuzzy-match-rankfun
+   (dictree--construct-fuzzy-trie-rankfun rankfun dict)
+   (dictree--trie dict)))
+
+(defun dictree--construct-fuzzy-complete-rankfun (rankfun dict)
+  (trie--construct-fuzzy-complete-rankfun
+   (dictree--construct-fuzzy-trie-rankfun rankfun dict)
+   (dictree--trie dict)))
+
 
 ;; return wrapped sortfun to ignore fuzzy query distance data
-(trie--if-lexical-binding
-    (defun dictree--wrap-fuzzy-sortfun (cmpfun &optional reverse)
-      (let ((sortfun (trie-construct-sortfun cmpfun reverse)))
-	(lambda (a b) (funcall sortfun (car a) (car b)))))
+(defun dictree--wrap-fuzzy-sortfun (cmpfun &optional reverse)
+  (let ((sortfun (trie-construct-sortfun cmpfun reverse)))
+    (lambda (a b) (funcall sortfun (car a) (car b)))))
+
+(dictree--if-lexical-binding nil
   (defun dictree--wrap-fuzzy-sortfun (cmpfun &optional reverse)
     (let ((sortfun (trie-construct-sortfun cmpfun reverse)))
       `(lambda (a b) (,sortfun (car a) (car b))))))
 
 
 ;; return wrapped combfun to deal with data wrapping
-(trie--if-lexical-binding
-    (defun dictree--wrap-combfun (combfun)  ; INTERNAL USE ONLY
-      (lambda (cell1 cell2)
-	(dictree--cell-create
-	 (funcall combfun
-		  (dictree--cell-data cell1)
-		  (dictree--cell-data cell2))
-	 (append (dictree--cell-plist cell1)
-		 (dictree--cell-plist cell2)))))
+(defun dictree--wrap-combfun (combfun)  ; INTERNAL USE ONLY
+  (lambda (cell1 cell2)
+    (dictree--cell-create
+     (funcall combfun
+	      (dictree--cell-data cell1)
+	      (dictree--cell-data cell2))
+     (append (dictree--cell-plist cell1)
+	     (dictree--cell-plist cell2)))))
+
+(dictree--if-lexical-binding nil
   (defun dictree--wrap-combfun (combfun)  ; INTERNAL USE ONLY
     `(lambda (cell1 cell2)
        (dictree--cell-create
@@ -352,32 +401,37 @@ If START or END is negative, it counts from the end."
 
 
 ;; return wrapped filter function to deal with data wrapping
-(trie--if-lexical-binding
-    (defun dictree--wrap-filter (filter)  ; INTERNAL USE ONLY
-      (lambda (key data) (funcall filter key (dictree--cell-data data))))
+(defun dictree--wrap-filter (filter)  ; INTERNAL USE ONLY
+  (lambda (key data) (funcall filter key (dictree--cell-data data))))
+
+(dictree--if-lexical-binding nil
   (defun dictree--wrap-filter (filter)  ; INTERNAL USE ONLY
     `(lambda (key data) (,filter key (dictree--cell-data data)))))
 
 
 ;; return wrapped result function to deal with data wrapping
-(trie--if-lexical-binding
-    (defun dictree--wrap-resultfun (resultfun)  ; INTERNAL USE ONLY
-      (lambda (res)
-	(funcall resultfun (car res) (dictree--cell-data (cdr res)))))
+(defun dictree--wrap-resultfun (resultfun)  ; INTERNAL USE ONLY
+  (lambda (res)
+    (funcall resultfun (car res) (dictree--cell-data (cdr res)))))
+
+(dictree--if-lexical-binding nil
   (defun dictree--wrap-resultfun (resultfun)  ; INTERNAL USE ONLY
     `(lambda (res) (,resultfun (car res) (dictree--cell-data (cdr res))))))
 
 
-;; construct lexicographic sort function from DICT's comparison function
-(trie--if-lexical-binding
-    (defun dictree--construct-sortfun (dict)  ; INTERNAL USE ONLY
-      (let ((sortfun (trie-construct-sortfun
-		      (dictree-comparison-function dict))))
-	(lambda (a b) (funcall sortfun (car a) (car b)))))
-    (defun dictree--construct-sortfun (dict)  ; INTERNAL USE ONLY
-      `(lambda (a b)
-	 (,(trie-construct-sortfun (dictree-comparison-function (car dict)))
-	  (car a) (car b)))))
+;; construct lexicographic sort function from DICT's comparison function.
+;; ACCESSOR is used to obtain the sort key, defaulting to `car'.
+(defun dictree--construct-sortfun (comparison-function &optional accessor)  ; INTERNAL USE ONLY
+  (unless accessor (setq accessor #'car))
+  (let ((sortfun (trie-construct-sortfun comparison-function)))
+    (lambda (a b)
+      (funcall sortfun (funcall accessor a) (funcall accessor b)))))
+
+(dictree--if-lexical-binding nil
+  (defun dictree--construct-sortfun (dict &optional accessor)  ; INTERNAL USE ONLY
+    `(lambda (a b)
+       (,(trie-construct-sortfun (dictree-comparison-function dict))
+	(,accessor a)	(,accessor b)))))
 
 
 
@@ -391,10 +445,8 @@ If START or END is negative, it counts from the end."
    (:constructor nil)
    (:constructor dictree--create
 		 (&optional
+		  name
 		  filename
-		  (name (and filename
-			     (file-name-sans-extension
-			      (file-name-nondirectory filename))))
 		  autosave
 		  _unlisted
 		  (comparison-function #'<)
@@ -409,7 +461,7 @@ If START or END is negative, it counts from the end."
 		  (trie-type 'avl)
 		  &aux
 		  (modified nil)
-		  (trie (make-trie comparison-function trie-type))
+		  (trie (trie-create comparison-function trie-type))
 		  (lookup-cache nil)
 		  (complete-cache nil)
 		  (regexp-cache nil)
@@ -419,10 +471,8 @@ If START or END is negative, it counts from the end."
 		  ))
    (:constructor dictree--create-custom
 		 (&optional
+		  name
 		  filename
-		  (name (and filename
-			     (file-name-sans-extension
-			      (file-name-nondirectory filename))))
 		  autosave
 		  _unlisted
 		  (comparison-function #'<)
@@ -480,10 +530,8 @@ If START or END is negative, it counts from the end."
    (:constructor dictree--meta-dict-create
 		 (dictionary-list
 		  &optional
+		  name
 		  filename
-		  (name (when filename
-			  (file-name-sans-extension
-			   (file-name-nondirectory filename))))
 		  autosave
 		  _unlisted
 		  (combine-function #'+)
@@ -531,12 +579,10 @@ If START or END is negative, it counts from the end."
     (list (dictree--trie dict))))
 
 
-(defun dictree--merge (list1 list2 cmpfun &optional combfun maxnum)
+(defun dictree--merge (list1 list2 cmpfun &optional maxnum)
   ;; Destructively merge together sorted lists LIST1 and LIST2, sorting
   ;; elements according to CMPFUN. For non-null MAXNUM, only the first
-  ;; MAXNUM are kept. For non-null COMBFUN, duplicate elements will be
-  ;; merged by passing the two elements as arguments to COMBFUN, and
-  ;; using the return value as the merged element.
+  ;; MAXNUM are kept.
   (or (listp list1) (setq list1 (append list1 nil)))
   (or (listp list2) (setq list2 (append list2 nil)))
   (let (res (i 0))
@@ -544,17 +590,9 @@ If START or END is negative, it counts from the end."
     ;; build up result list backwards
     (while (and list1 list2 (or (null maxnum) (< (incf i) maxnum)))
       ;; move smaller element to result list
-      (if (funcall cmpfun (car list1) (car list2))
-	  (push (pop list1) res)
-	(if (funcall cmpfun (car list2) (car list1))
-	    (push (pop list2) res)
-	  ;; if elements are equal, merge them for non-null COMBFUN
-	  (if combfun
-	      (push (funcall combfun (pop list1) (pop list2))
-		    res)
-	    ;; otherwise, add both to result list, in order
-	    (push (pop list1) res)
-	    (push (pop list2) res)))))
+      (if (funcall cmpfun (car list2) (car list1))
+	  (push (pop list2) res)
+	(push (pop list1) res)))
 
     ;; return result if we already have MAXNUM entries
     (if (and maxnum (= i maxnum))
@@ -586,7 +624,7 @@ If START or END is negative, it counts from the end."
 ;;     (dictree--merge
 ;;      (dictree--do-merge-sort list1 (/ len 2) sortfun combfun)
 ;;      (dictree--do-merge-sort list2 (/ len 2) sortfun combfun)
-;;      sortfun combfun)))
+;;      sortfun)))
 
 
 
@@ -607,24 +645,23 @@ If START or END is negative, it counts from the end."
   "Create an empty dictionary and return it.
 
 If NAME is supplied, the dictionary is stored in the variable
-NAME. Defaults to FILENAME stripped of directory and
-extension. (Regardless of the value of NAME, the dictionary will
-be stored in the default variable name when it is reloaded from
-file.)
+NAME, and saved to a file named \"NAME.el(c)\".
 
-FILENAME supplies a directory and file name to use when saving
-the dictionary. If the AUTOSAVE flag is non-nil, then the
-dictionary will automatically be saved to this file when it is
-unloaded or when exiting Emacs.
+FILENAME sets the default file name to use when saving the
+dictionary. If the AUTOSAVE flag is non-nil, then the dictionary
+will automatically be saved to this file when it is unloaded or
+when exiting Emacs. If FIlENAME is a directory, then it will be
+saved to a file called \"NAME.el(c)\" under that directory.
 
-If UNLISTED is non-nil, the dictionary will not be added to the
-list of loaded dictionaries. Note that this disables autosaving.
+If UNLISTED is non-nil, the dictionary will not be recorded in
+the list of loaded dictionaries. Note that this disables
+autosaving.
 
-COMPARE-FUNCTION sets the function used to compare elements of
+COMPARISON-FUNCTION sets the function used to compare elements of
 the keys. It should take two arguments, A and B, both of the type
 contained by the sequences used as keys \(e.g. if the keys will
 be strings, the function will be passed two characters\). It
-should return t if the first is \"less than\" the
+should return t if the first is strictly \"less than\" the
 second. Defaults to `<'.
 
 INSERT-FUNCTION sets the function used to insert data into the
@@ -705,21 +742,26 @@ loaded dictionary.
 TRIE-TYPE sets the type of trie to use as the underlying data
 structure. See `trie-create' for details."
 
+  ;; derive NAME from FILENAME or vice versa
+  (when (and (not name) filename
+	     (not (string= (setq name (file-name-nondirectory filename))
+			   "")))
+    (setq name (intern (file-name-sans-extension name))))
+  (when (and name filename
+	     (string= (file-name-directory filename) filename))
+    (setq filename (concat filename (symbol-name name))))
   ;; sadly, passing null values overrides the defaults in the defstruct
   ;; dictree--create, so we have to explicitly set the defaults again here
-  (or name (setq name (and filename (make-symbol
-				     (file-name-sans-extension
-				     (file-name-nondirectory filename))))))
-  (or comparison-function (setq comparison-function '<))
-  (or insert-function (setq insert-function (lambda (a _b) a)))
-  (or rank-function (setq rank-function (lambda (a b) (> (cdr a) (cdr b)))))
-  (or cache-policy (setq cache-policy 'time))
-  (or cache-update-policy (setq cache-update-policy 'synchronize))
-  (or trie-type (setq trie-type 'avl))
+  (unless comparison-function (setq comparison-function #'<))
+  (unless insert-function (setq insert-function (lambda (a _b) a)))
+  (unless rank-function (setq rank-function (lambda (a b) (> (cdr a) (cdr b)))))
+  (unless cache-policy (setq cache-policy 'time))
+  (unless cache-update-policy (setq cache-update-policy 'synchronize))
+  (unless trie-type (setq trie-type 'avl))
 
   (let ((dict
 	 (dictree--create
-	  filename (when name (symbol-name name)) autosave unlisted
+	  (when name (symbol-name name)) filename autosave unlisted
 	  comparison-function insert-function rank-function
 	  cache-policy cache-threshold cache-update-policy
 	  key-savefun key-loadfun
@@ -759,11 +801,16 @@ The NAME through PLIST-LOADFUN arguments are as for
 The remaining arguments control the type of trie to use as the
 underlying data structure. See `trie-create' for details."
 
-  ;; sadly, passing null values over-rides the defaults in the defstruct
-  ;; dictree--create, so we have to explicitly set the defaults again
-  ;; here
-  (or name (setq name (and filename (file-name-sans-extension
-				     (file-name-nondirectory filename)))))
+  ;; derive NAME from FILENAME or vice versa
+  (when (and (not name) filename
+	     (not (string= (setq name (file-name-nondirectory filename))
+			   "")))
+    (setq name (intern (file-name-sans-extension name))))
+  (when (and name filename
+	     (string= (file-name-directory filename) filename))
+    (setq filename (concat filename (symbol-name name))))
+  ;; sadly, passing null values overrides the defaults in the defstruct
+  ;; dictree--create, so we have to explicitly set the defaults again here
   (or comparison-function (setq comparison-function #'<))
   (or insert-function (setq insert-function (lambda (a _b) a)))
   (or rank-function (setq rank-function (lambda (a b) (< (cdr a) (cdr b)))))
@@ -772,7 +819,7 @@ underlying data structure. See `trie-create' for details."
 
   (let ((dict
 	 (dictree--create-custom
-	  filename (when name (symbol-name name)) autosave unlisted
+	  (when name (symbol-name name)) filename autosave unlisted
 	  comparison-function insert-function rank-function
 	  cache-policy cache-threshold cache-update-policy
 	  key-savefun key-loadfun
@@ -820,21 +867,25 @@ The other arguments are as for `dictree-create'. Note that
 caching is only possible if NAME is supplied, otherwise the
 CACHE-THRESHOLD argument is ignored and caching is disabled."
 
-  ;; sadly, passing null values over-rides the defaults in the defstruct
-  ;; `dictree--create', so we have to explicitly set the defaults again
-  ;; here
-  (or name (setq name (and filename
-			   (file-name-sans-extension
-			    (file-name-nondirectory filename)))))
-  (or combine-function (setq combine-function #'+))
-  (or cache-policy (setq cache-policy 'time))
-  (or cache-update-policy (setq cache-update-policy 'synchronize))
+  ;; derive NAME from FILENAME or vice versa
+  (when (and (not name) filename
+	     (not (string= (setq name (file-name-nondirectory filename))
+			   "")))
+    (setq name (intern (file-name-sans-extension name))))
+  (when (and name filename
+	     (string= (file-name-directory filename) filename))
+    (setq filename (concat filename (symbol-name name))))
+  ;; sadly, passing null values overrides the defaults in the defstruct
+  ;; `dictree--create-meta-dict', so we have to explicitly set the defaults
+  ;; again here
+  (unless combine-function (setq combine-function #'+))
+  (unless cache-policy (setq cache-policy 'time))
+  (unless cache-update-policy (setq cache-update-policy 'synchronize))
 
   (let ((dict
 	 (dictree--meta-dict-create
-	  dictionary-list filename (when name (symbol-name name))
-	  autosave unlisted
-	  combine-function
+	  dictionary-list combine-function
+	  (when name (symbol-name name)) filename autosave unlisted
 	  cache-policy (when name cache-threshold) cache-update-policy
 	 )))
     ;; store dictionary in variable NAME
@@ -1090,7 +1141,7 @@ If KEY does not already exist, this creates it. How the data is
 inserted depends on the dictionary's insertion function \(see
 `dictree-create'\).
 
-The optional INSERT-FUNCTION over-rides the dictionary's own
+The optional INSERT-FUNCTION overrides the dictionary's own
 insertion function. If KEY already exists in DICT,
 INSERT-FUNCTION is called with two arguments: the data DATA, and
 the data associated with KEY in the dictionary. Its return value
@@ -1110,7 +1161,7 @@ becomes the new association for KEY."
 	  olddata newdata)
       ;; set the dictionary's modified flag
       (setf (dictree-modified dict) t)
-      ;; insert key in dictionary's ternary search tree
+      ;; insert key in dictionary's trie
       (setq newdata
 	    (trie-insert
 	     (dictree--trie dict) key (dictree--cell-create data nil)
@@ -1202,6 +1253,15 @@ PREFIX is a prefix of STR."
 		   (equal pfx (dictree--subseq str 0 len)))
 	  (throw 'is-prefix t))))))
 
+(defun dictree--filter-prefix (prefix pfxfilter)
+  "Return non-nil if all prefixes of PREFIX pass PFXFILTER.
+Otherwise, return nil."
+  (catch 'failed
+    (dotimes (i (length prefix))
+      (unless (funcall pfxfilter (cl-subseq prefix 0 i))
+	(throw 'failed nil)))
+    t))
+
 
 (defun dictree--above-cache-threshold-p
   (time length policy threshold &optional cache-long-keys)
@@ -1253,51 +1313,57 @@ PREFIX is a prefix of STR."
     ;; synchronize query caches if something's actually changed
     (when (or deleted (not (equal olddata newdata)))
       (dolist (cachefuns
-	       '((dictree-complete-cache
+	       `((dictree-complete-cache
 		  dictree--synchronize-completion-cache
 		  dictree--prefix-p)
 		 (dictree-regexp-cache
 		  dictree--synchronize-regexp-cache
-		  (lambda (arg key)
-		    (tNFA-regexp-match
-		     arg key :test (trie--construct-equality-function
-				    (dictree--comparison-function dict)))))
+		  ,(lambda (regexp key)
+		     (tNFA-regexp-match
+		      regexp key :test (trie--construct-equality-function
+					(dictree--comparison-function dict)))))
 		 (dictree-fuzzy-match-cache
 		  dictree--synchronize-fuzzy-match-cache
-		  (lambda (string dist key)
-		    (<= (Lewenstein-distance string key) dist)))
+		  ,(lambda (string dist key)
+		     (if (consp dist)
+			 (<= (Lewenstein-distance (substring string (car dist)) key)
+			     (cdr dist))
+		       (<= (Lewenstein-distance string key) dist))))
 		 (dictree-fuzzy-complete-cache
-		  dictree--synchronize-fuzzy-completion-cache
-		  (lambda (prefix dist key)
-		    (<= (Lewenstein-distance prefix key) dist)))
+		  dictree--synchronize-fuzzy-complete-cache
+		  ,(lambda (prefix dist key)
+		     (if (consp dist)
+			 (<= (Lewenstein-distance (substring prefix (car dist)) key)
+			     (cdr dist))
+		       (<= (Lewenstein-distance prefix key) dist))))
 		 ))
 	(when (funcall (nth 0 cachefuns) dict)
 	  (maphash
 	   (lambda (cache-key cache-entry)
-	     (destructuring-bind
-		 (arg auxargs rank-function reverse filter) cache-key
-	       (when (apply (nth 2 cachefuns)
-			    (append (list arg) auxargs (list key)))
+	     (destructuring-bind (args rank-function reverse filter pfxfilter)
+		 cache-key
+	       (when (apply (nth 2 cachefuns) (append args (list key)))
 		 (cond
 		  ;; updating dirty cache entries
 		  ((eq (dictree-cache-update-policy dict) 'synchronize)
 		   (funcall (nth 1 cachefuns)
-			    dict key olddata newdata deleted cache-entry
-			    arg auxargs rank-function reverse filter))
+			    dict key olddata newdata deleted cache-entry args
+			    :reverse reverse :rank-function rank-function
+			    :filter filter :pfxfilter pfxfilter))
 		  ;; deleting dirty cache entries
-		  (t (remhash (list arg auxargs rank-function reverse filter)
+		  (t (remhash (list args rank-function reverse filter pfxfilter)
 			      (funcall (nth 0 cachefuns) dict)))))))
 	   (funcall (nth 0 cachefuns) dict)))
 	))))
 
 
 
-(defun dictree--synchronize-completion-cache
-    (dict key olddata newdata deleted cache-entry
-	  arg auxargs rank-function reverse filter)
-  ;; Synchronize DICT's completion CACHE-ENTRY for a query with arguments ARG,
-  ;; AUXARGS, RANK-FUNCTION, REVERSE and FILTER, where KEY's data was either
-  ;; updated from OLDDATA to NEWDATA or DELETED,
+(defun* dictree--synchronize-completion-cache
+    (dict key olddata newdata deleted cache-entry args
+	  &key reverse rank-function filter pfxfilter)
+  ;; Synchronize DICT's completion CACHE-ENTRY for a query with arguments
+  ;; ARGS, RANK-FUNCTION, REVERSE, FILTER and PFXFILTER, where KEY's data was
+  ;; either updated from OLDDATA to NEWDATA or DELETED,
 
   (let* ((completions (dictree--cache-results cache-entry))
 	 (maxnum (dictree--cache-maxnum cache-entry))
@@ -1310,18 +1376,24 @@ PREFIX is a prefix of STR."
     ;; for meta-dict, get old data from cache instead of OLDDATA
     (when (dictree--meta-dict-p dict) (setq olddata (cdr cmpl)))
     ;; skip cache update if key/data pair doesn't pass FILTER
-    (when (or (null filter)
-	      (funcall filter key olddata)
-	      (funcall filter key newdata))
+    (when (and (or (null filter)
+		   (funcall filter key olddata)
+		   (funcall filter key newdata))
+	       (or (null pfxfilter)
+		   (dictree--filter-prefix (cl-subseq key (length (car args)))
+					   pfxfilter)))
       ;; if key was...
       (cond
 
        ;; deleted and in cached result: remove cache entry and re-run the
        ;; same completion to update the cache
        ((and deleted cmpl)
-	(remhash (list arg auxargs rank-function reverse filter)
+	(remhash (list args rank-function reverse filter pfxfilter)
 		 (dictree-complete-cache dict))
-	(dictree-complete dict arg rank-function maxnum reverse filter))
+	(dictree-complete dict (car args)
+			  :maxnum maxnum :reverse reverse
+			  :rank-function rank-function
+			  :filter filter :pfxfilter pfxfilter))
 
        ;; modified and not in cached result: merge it into the completion
        ;; list, retaining only the first maxnum
@@ -1330,14 +1402,7 @@ PREFIX is a prefix of STR."
 	  (setf (dictree--cache-results cache-entry)
 		(dictree--merge
 		 (list (cons key newdata)) completions
-		 (or rankfun
-		     `(lambda (a b)
-			(,(trie-construct-sortfun
-			   (dictree-comparison-function dict))
-			 (car a) (car b))))
-		 (when (dictree--meta-dict-p dict)
-		   (dictree--wrap-combfun
-		    (dictree--meta-dict-combine-function dict)))
+		 (or rankfun (dictree--construct-sortfun dict))
 		 maxnum))))
 
        ;; modified and in the cached result
@@ -1353,19 +1418,22 @@ PREFIX is a prefix of STR."
 			     (sort completions rankfun))
 		       (equal key (car (last (dictree--cache-results
 					      cache-entry))))))
-	  (remhash (list arg auxargs rank-function reverse filter)
+	  (remhash (list args rank-function reverse filter pfxfilter)
 		   (dictree-complete-cache dict))
-	  (dictree-complete dict arg rank-function maxnum reverse filter)))
+	  (dictree-complete dict (car args)
+			    :maxnum maxnum :reverse reverse
+			    :rank-function rank-function
+			    :filter filter :pfxfilter pfxfilter)))
 
        ;; deleted and not in cached result: requires no action
        ))))
 
 
-(defun dictree--synchronize-regexp-cache
-    (dict key olddata newdata deleted cache-entry
-	  arg auxargs rank-function reverse filter)
-  ;; Synchronize DICT's regexp CACHE-ENTRY for a query with arguments ARG,
-  ;; AUXARGS, RANK-FUNCTION, REVERSE and FILTER, where KEY's data was either
+(defun* dictree--synchronize-regexp-cache
+    (dict key olddata newdata deleted cache-entry args
+	  &key reverse rank-function filter pfxfilter)
+  ;; Synchronize DICT's regexp CACHE-ENTRY for a query with arguments ARGS
+  ;; RANK-FUNCTION, REVERSE, FILTER and PFXFILTER, where KEY's data was either
   ;; updated from OLDDATA to NEWDATA or DELETED,
 
   (let* ((completions (dictree--cache-results cache-entry))
@@ -1387,18 +1455,23 @@ PREFIX is a prefix of STR."
     ;; for meta-dict, get old data from cache instead of OLDDATA
     (when (dictree--meta-dict-p dict) (setq olddata (cdr cmpl)))
     ;; skip cache update if key/data pair doesn't pass FILTER
-    (when (or (null filter)
-	      (funcall filter key olddata)
-	      (funcall filter key newdata))
+    (when (and (or (null filter)
+		   (funcall filter key olddata)
+		   (funcall filter key newdata))
+	       (or (null pfxfilter)
+		   (dictree--filter-prefix key pfxfilter)))
       ;; if key was...
       (cond
 
        ;; deleted and in cached result: remove cache entry and re-run the
        ;; same completion to update the cache
        ((and deleted cmpl)
-	(remhash (list arg auxargs rank-function reverse filter)
+	(remhash (list args rank-function reverse filter pfxfilter)
 		 (dictree-regexp-cache dict))
-	(dictree-regexp-search dict arg rank-function maxnum reverse filter))
+	(dictree-regexp-search dict (car args)
+			       :maxnum maxnum :reverse reverse
+			       :rank-function rank-function
+			       :filter filter :pfxfilter pfxfilter))
 
        ;; modified and not in cached result: merge it into the completion
        ;; list, retaining only the first maxnum
@@ -1406,7 +1479,7 @@ PREFIX is a prefix of STR."
 	(when (or (null filter) (funcall filter key newdata))
 	  (save-match-data
 	    (set-match-data nil)
-	    (tNFA-regexp-match arg key
+	    (tNFA-regexp-match (car args) key
 			       :test (trie--construct-equality-function
 				      (dictree--comparison-function dict)))
 	    (when (setq group-data (nthcdr 2 (match-data)))
@@ -1414,15 +1487,7 @@ PREFIX is a prefix of STR."
 	  (setf (dictree--cache-results cache-entry)
 		(dictree--merge
 		 (list (cons key newdata)) completions
-		 (or rankfun
-		     `(lambda (a b)
-			(,(trie-construct-sortfun
-			   (dictree-comparison-function dict))
-			 ,(if group-data '(caar a) '(car a))
-			 ,(if group-data '(caar b) '(car b)))))
-		 (when (dictree--meta-dict-p dict)
-		   (dictree--wrap-combfun
-		    (dictree--meta-dict-combine-function dict)))
+		 (or rankfun (dictree--construct-sortfun dict #'caar))
 		 maxnum))))
 
        ;; modified and in the cached result
@@ -1438,20 +1503,22 @@ PREFIX is a prefix of STR."
 			     (sort completions rankfun))
 		       (equal key (car (last (dictree--cache-results
 					      cache-entry))))))
-	  (remhash (list arg auxargs rank-function reverse filter)
+	  (remhash (list args rank-function reverse filter pfxfilter)
 		   (dictree-regexp-cache dict))
-	  (dictree-regexp-search dict arg rank-function maxnum reverse filter)
-	  ))
+	  (dictree-regexp-search dict (car args)
+				 :maxnum maxnum :reverse reverse
+				 :rank-function rank-function
+				 :filter filter :pfxfilter pfxfilter)))
 
        ;; deleted and not in cached result: requires no action
        ))))
 
 
-(defun dictree--synchronize-fuzzy-match-cache
-    (dict key olddata newdata deleted cache-entry
-	  arg auxargs rank-function reverse filter)
+(defun* dictree--synchronize-fuzzy-match-cache
+    (dict key olddata newdata deleted cache-entry args
+	  &key reverse rank-function filter pfxfilter)
   ;; Synchronize DICT's fuzzy match CACHE-ENTRY for a query with arguments
-  ;; ARG, AUXARGS, RANK-FUNCTION, REVERSE and FILTER, where KEY's data was
+  ;; ARGS, RANK-FUNCTION, REVERSE, FILTER and PFXFILTER, where KEY's data was
   ;; either updated from OLDDATA to NEWDATA or DELETED,
 
   (let* ((completions (dictree--cache-results cache-entry))
@@ -1459,32 +1526,29 @@ PREFIX is a prefix of STR."
 	 (cmpl (catch 'found
 		 (dolist (c completions)
 		   (when (equal key (caar c)) (throw 'found c)))))
-	 (distance (Lewenstein-distance key arg))
-	 (rankfun (cond ((eq rank-function t)
-			 (dictree--wrap-fuzzy-rankfun
-			  (dictree-rank-function dict)))
-			((eq rank-function 'distance)
-			 (dictree--wrap-fuzzy-rankfun
-			  (trie--construct-Lewenstein-rankfun
-			   (dictree-comparison-function dict))))
-			(rank-function
-			 (dictree--wrap-fuzzy-rankfun rank-function)))))
+	 (distance (Lewenstein-distance (car args) key))
+	 (rankfun (dictree--construct-fuzzy-match-rankfun
+		   rank-function dict)))
     ;; for meta-dict, get old data from cache instead of OLDDATA
     (when (dictree--meta-dict-p dict) (setq olddata (cdr cmpl)))
     ;; skip cache update if key/data pair doesn't pass FILTER
-    (when (or (null filter)
-	      (funcall filter key olddata)
-	      (funcall filter key newdata))
+    (when (and (or (null filter)
+		   (funcall filter key olddata)
+		   (funcall filter key newdata))
+	       (or (null pfxfilter)
+		   (dictree--filter-prefix key pfxfilter)))
       ;; if key was...
       (cond
 
        ;; deleted and in cached result: remove cache entry and re-run the
        ;; same completion to update the cache
        ((and deleted cmpl)
-	(remhash (list arg auxargs rank-function reverse filter)
+	(remhash (list args rank-function reverse filter pfxfilter)
 		 (dictree-fuzzy-match-cache dict))
-	(dictree-fuzzy-match dict arg (car auxargs)
-			     rank-function maxnum reverse filter))
+	(dictree-fuzzy-match dict (car args) (nth 1 args)
+			     :maxnum maxnum :reverse reverse
+			     :rank-function rank-function
+			     :filter filter :pfxfilter pfxfilter))
 
        ;; modified and not in cached result: merge it into the completion
        ;; list, retaining only the first maxnum
@@ -1493,14 +1557,7 @@ PREFIX is a prefix of STR."
 	  (setf (dictree--cache-results cache-entry)
 		(dictree--merge
 		 (list (cons (cons key distance) newdata)) completions
-		 (or rankfun
-		     `(lambda (a b)
-			(,(trie-construct-sortfun
-			   (dictree-comparison-function dict))
-			 (caar a) (caar b))))
-		 (when (dictree--meta-dict-p dict)
-		   (dictree--wrap-combfun
-		    (dictree--meta-dict-combine-function dict)))
+		 (or rankfun (dictree--construct-sortfun dict #'caar))
 		 maxnum))))
 
        ;; modified and in the cached result
@@ -1516,18 +1573,20 @@ PREFIX is a prefix of STR."
 			     (sort completions rankfun))
 		       (equal key (car (last (dictree--cache-results
 					      cache-entry))))))
-	  (remhash (list arg auxargs rank-function reverse filter)
+	  (remhash (list args rank-function reverse filter pfxfilter)
 		   (dictree-fuzzy-match-cache dict))
-	  (dictree-fuzzy-match dict arg (car auxargs)
-			       rank-function maxnum reverse filter)))
+	  (dictree-fuzzy-match dict (car args) (nth 1 args)
+			       :maxnum maxnum :reverse reverse
+			       :rank-function rank-function
+			       :filter filter :pfxfilter pfxfilter)))
 
        ;; deleted and not in cached result: requires no action
        ))))
 
 
-(defun dictree--synchronize-fuzzy-complete-cache
-    (dict key olddata newdata deleted cache-entry
-	  arg auxargs rank-function reverse filter)
+(defun* dictree--synchronize-fuzzy-complete-cache
+    (dict key olddata newdata deleted cache-entry args
+	  &key rank-function reverse filter pfxfilter)
   ;; Synchronize DICT's fuzzy completion CACHE-ENTRY for a query with
   ;; arguments ARG, AUXARGS, RANK-FUNCTION, REVERSE and FILTER, where KEY's
   ;; data was either updated from OLDDATA to NEWDATA or DELETED,
@@ -1537,32 +1596,31 @@ PREFIX is a prefix of STR."
 	 (cmpl (catch 'found
 		 (dolist (c completions)
 		   (when (equal key (caar c)) (throw 'found c)))))
-	 (distance (Lewenstein-distance key arg))
-	 (rankfun (cond ((eq rank-function t)
-			 (dictree--wrap-fuzzy-rankfun
-			  (dictree-rank-function dict)))
-			((eq rank-function 'distance)
-			 (dictree--wrap-fuzzy-rankfun
-			  (trie--construct-Lewenstein-rankfun
-			   (dictree-comparison-function dict))))
-			(rank-function
-			 (dictree--wrap-fuzzy-rankfun rank-function)))))
+	 (distance (Lewenstein-prefix-distance (car args) key))
+	 (pfxlen (cdr distance))
+	 (distance (car distance))
+	 (rankfun (dictree--construct-fuzzy-complete-rankfun
+		   rank-function dict)))
     ;; for meta-dict, get old data from cache instead of OLDDATA
     (when (dictree--meta-dict-p dict) (setq olddata (cdr cmpl)))
     ;; skip cache update if key/data pair doesn't pass FILTER
-    (when (or (null filter)
-	      (funcall filter key olddata)
-	      (funcall filter key newdata))
+    (when (and (or (null filter)
+		   (funcall filter key olddata)
+		   (funcall filter key newdata))
+	       (or (null pfxfilter)
+		   (dictree--filter-prefix key pfxfilter)))
       ;; if key was...
       (cond
 
        ;; deleted and in cached result: remove cache entry and re-run the
        ;; same completion to update the cache
        ((and deleted cmpl)
-	(remhash (list arg auxargs rank-function reverse filter)
+	(remhash (list args rank-function reverse filter pfxfilter)
 		 (dictree-fuzzy-complete-cache dict))
-	(dictree-fuzzy-complete dict arg (car auxargs)
-				rank-function maxnum reverse filter))
+	(dictree-fuzzy-complete dict (car args) (nth 1 args)
+				:maxnum maxnum :reverse reverse
+				:rank-function rank-function
+				:filter filter :pfxfilter pfxfilter))
 
        ;; modified and not in cached result: merge it into the completion
        ;; list, retaining only the first maxnum
@@ -1570,15 +1628,9 @@ PREFIX is a prefix of STR."
 	(when (or (null filter) (funcall filter key newdata))
 	  (setf (dictree--cache-results cache-entry)
 		(dictree--merge
-		 (list (cons key (cons distance newdata))) completions
-		 (or rankfun
-		     `(lambda (a b)
-			(,(trie-construct-sortfun
-			   (dictree-comparison-function dict))
-			 (car a) (car b))))
-		 (when (dictree--meta-dict-p dict)
-		   (dictree--wrap-combfun
-		    (dictree--meta-dict-combine-function dict)))
+		 (list (cons (list key distance pfxlen) newdata))
+		 completions
+		 (or rankfun (dictree--construct-sortfun dict #'caar))
 		 maxnum))))
 
        ;; modified and in the cached result
@@ -1594,10 +1646,12 @@ PREFIX is a prefix of STR."
 			     (sort completions rankfun))
 		       (equal key (car (last (dictree--cache-results
 					      cache-entry))))))
-	  (remhash (list arg auxargs rank-function reverse filter)
+	  (remhash (list args rank-function reverse filter pfxfilter)
 		   (dictree-fuzzy-complete-cache dict))
-	  (dictree-fuzzy-complete dict arg (car auxargs)
-				  rank-function maxnum reverse filter)))
+	  (dictree-fuzzy-complete dict (car args) (nth 1 args)
+				  :maxnum maxnum :reverse reverse
+				  :rank-function rank-function
+				  :filter filter :pfxfilter pfxfilter)))
 
        ;; deleted and not in cached result: requires no action
        ))))
@@ -1649,43 +1703,33 @@ also `dictree-member-p' for testing existence alone.)"
   ;; Return association of KEY in DICT, or NILFLAG if KEY does not
   ;; exist. Does not do any data/meta-data unwrapping
 
-  (let* ((flag '(nil))
-	 (data flag)
-	 time)
-    ;; if KEY is in the cache, then we're done
+  (let* (data time (flag '(nil)))
+    ;; KEY is in cache: done
     (unless (and (dictree-lookup-cache dict)
 		 (setq data (gethash key (dictree--lookup-cache dict))))
 
-      ;; otherwise, we have to look in the dictionary itself...
-      (cond
-       ;; if DICT is a meta-dict, look in its constituent dictionaries
-       ((dictree--meta-dict-p dict)
-	(let (newdata (newflag '(nil)))
-	  ;; time the lookup for caching
-	  (setq time (float-time))
-	  ;; look in each constituent dictionary in turn
-	  (dolist (dic (dictree--meta-dict-dictlist dict))
-	    (setq newdata (dictree--lookup dic key newflag))
-	    ;; skip dictionary if it doesn't contain KEY
-	    (unless (eq newdata newflag)
-	      ;; if we haven't found KEY before, we have now!
-	      (if (eq data flag) (setq data newdata)
-		;; otherwise, combine the previous data with the new data
-		(setq data
-		      (funcall (dictree--wrap-combfun
-				(dictree--meta-dict-combine-function dict))
-			       data newdata)))))
-	  (setq time (- (float-time) time))))
+      ;; meta-dict: look in all its constituent dictionaries
+      (if (dictree--meta-dict-p dict)
+	  (let (newdata)
+	    ;; time lookup for caching
+	    (setq time (float-time))
+	    (dolist (dic (dictree--meta-dict-dictlist dict))
+	      (setq newdata (dictree--lookup dic key flag))
+	      (unless (eq newdata flag)
+		(if (eq data flag) (setq data newdata)
+		  ;; combine results from multiple dictionaries
+		  (setq data
+			(funcall (dictree--wrap-combfun
+				  (dictree--meta-dict-combine-function dict))
+				 data newdata)))))
+	    (setq time (- (float-time) time)))
 
-       ;; otherwise, DICT is a normal dictionary, so look in it's trie
-       (t
-	;; time the lookup for caching
+	;; normal dict: look in it's trie, timing lookup for caching
 	(setq time (float-time))
 	(setq data (trie-member (dictree--trie dict) key flag))
-	(setq time (- (float-time) time))))
+	(setq time (- (float-time) time)))
 
-      ;; if lookup found something, and we're above the cache-threshold, cache
-      ;; the result
+      ;; found something and we're above the cache-threshold: cache result
       (when (and (not (eq data flag))
 		 (dictree--above-cache-threshold-p
 		  time (length key) (dictree-cache-policy dict)
@@ -1695,7 +1739,7 @@ also `dictree-member-p' for testing existence alone.)"
 	(dictree-create-lookup-cache dict)
 	(puthash key data (dictree-lookup-cache dict))))
 
-    ;; return the desired data
+    ;; return data
     (if (eq data flag) nilflag data)))
 
 
@@ -1714,16 +1758,15 @@ PROPERTY to VALUE in *all* its constituent dictionaries.
 
 Unlike the data associated with a key (cf. `dictree-insert'),
 properties are not included in the results of queries on the
-dictionary \(`dictree-lookup', `dictree-complete',
-`dictree-complete-ordered'\), nor do they affect the outcome of
-any of the queries. They merely serves to tag a key with some
-additional information, and can only be retrieved using
-`dictree-get-property'."
+dictionary \(`dictree-lookup', `dictree-complete', etc.\), nor do
+they affect the outcome of any of the queries. They merely serve
+to tag a key with some additional information, and can only be
+retrieved using `dictree-get-property'."
 
   ;; sort out arguments
   (and (symbolp dict) (setq dict (symbol-value dict)))
   (cond
-   ;; set PROPERTY for KEY in all constituent dicts of a meta-dict
+   ;; meta-dict: set PROPERTY for KEY in all constituent dictionaries
    ((dictree--meta-dict-p dict)
     (warn "Setting %s property for key %s in all constituent\
  dictionaries of meta-dictionary %s" property key (dictree-name dict))
@@ -1736,7 +1779,8 @@ additional information, and can only be retrieved using
 	    (dictree--meta-dict-dictlist dict))
       ;; return VALUE if KEY was found in at least one constituent dict
       dictree--put-property-ret))
-   (t  ;; set PROPERTY for KEY in normal dict
+
+   (t  ;; normal dict: set PROPERTY for KEY in DICT
     (let ((cell (trie-member (dictree--trie dict) key)))
       (when cell
 	(setf (dictree-modified dict) t)
@@ -1758,17 +1802,19 @@ still be detected by supplying the optional argument to
 
 Note that if DICT is a meta-dictionary, then this will delete
 KEY's PROPERTY in *all* its constituent dictionaries."
+
   ;; sort out arguments
   (and (symbolp dict) (setq dict (symbol-value dict)))
   (cond
-   ;; delete PROPERTY from KEY in all constituent dicts of a meta-dict
+   ;; meta-dict: delete PROPERTY from KEY in all constituent dictionaries
    ((dictree--meta-dict-p dict)
     (warn "Deleting %s property from key %s in all constituent\
  dictionaries of meta-dicttionary %s" property key (dictree-name dict))
     (setf (dictree-modified dict) t)
     (mapcar (lambda (dic k p) (dictree-delete-property dic k p))
 	    (dictree--meta-dict-dictlist dict)))
-   (t  ;; delete PROPERTY from KEY in normal dict
+
+   (t  ;; normal dict: delete PROPERTY from KEY in DICT
     (let* ((cell (trie-member (dictree--trie dict) key))
 	   plist tail)
       (when (and cell
@@ -2057,17 +2103,25 @@ Interactively, DICT is read from the mini-buffer."
 
 
 
+;; Wrap SORTFUN, which sorts keys, so it can act on dictree--meta-stack
+;; elements.
 (defun dictree--construct-meta-stack-heapfun (sortfun &optional reverse)
-  ;; Wrap SORTFUN, which sorts keys, so it can act on
-  ;; dictree--meta-stack elements.
   (if reverse
-      `(lambda (b a) (,sortfun (car (dictree-stack-first a))
-			       (car (dictree-stack-first b))))
-    `(lambda (a b) (,sortfun (car (dictree-stack-first a))
-			     (car (dictree-stack-first b))))))
+      (lambda (b a) (funcall sortfun (car (dictree-stack-first a))
+			     (car (dictree-stack-first b))))
+    (lambda (a b) (funcall sortfun (car (dictree-stack-first a))
+			   (car (dictree-stack-first b))))))
+
+(dictree--if-lexical-binding nil
+  (defun dictree--construct-meta-stack-heapfun (sortfun &optional reverse)
+    (if reverse
+  	`(lambda (b a) (,sortfun (car (dictree-stack-first a))
+  				 (car (dictree-stack-first b))))
+      `(lambda (a b) (,sortfun (car (dictree-stack-first a))
+  			       (car (dictree-stack-first b)))))))
 
 
-(defun dictree-stack (dict &optional type reverse)
+(defun* dictree-stack (dict &key type reverse pfxfilter)
   "Create an object that allows DICT to be accessed as a stack.
 
 The stack is sorted in \"lexicographic\" order, i.e. the order
@@ -2090,11 +2144,13 @@ cases where mapping functions `dictree-mapc', `dictree-mapcar' or
 `dictree-mapf' would be sufficient, it is better to use one of
 those instead."
   (if (dictree--meta-dict-p dict)
-      (dictree--meta-stack-create dict type reverse)
-    (trie-stack (dictree--trie dict) type reverse)))
+      (dictree--meta-stack-create
+       dict :type type :reverse reverse :pfxfilter pfxfilter)
+    (trie-stack (dictree--trie dict)
+		:type type :reverse reverse :pfxfilter pfxfilter)))
 
 
-(defun dictree-complete-stack (dict prefix &optional reverse)
+(defun* dictree-complete-stack (dict prefix &key reverse pfxfilter)
   "Return an object that allows completions of PREFIX to be accessed
 as if they were a stack.
 
@@ -2122,11 +2178,13 @@ in implementing efficient algorithms on dict-trees. However, in
 cases where `dictree-complete' is sufficient, it is better to use
 that instead."
   (if (dictree--meta-dict-p dict)
-      (dictree--complete-meta-stack-create dict prefix reverse)
-    (trie-complete-stack (dictree--trie dict) prefix reverse)))
+      (dictree--complete-meta-stack-create
+       dict prefix :reverse reverse :pfxfilter pfxfilter)
+    (trie-complete-stack (dictree--trie dict) prefix
+			 :reverse reverse :pfxfilter pfxfilter)))
 
 
-(defun dictree-regexp-stack (dict regexp &optional reverse)
+(defun* dictree-regexp-stack (dict regexp &key reverse pfxfilter)
   "Return an object that allows REGEXP matches to be accessed
 as if they were a stack.
 
@@ -2166,11 +2224,14 @@ in implementing efficient algorithms on dict-trees. However, in
 cases where `dictree-regexp-search' is sufficient, it is better
 to use that instead."
   (if (dictree--meta-dict-p dict)
-      (dictree--regexp-meta-stack-create dict regexp reverse)
-    (trie-regexp-stack (dictree--trie dict) regexp reverse)))
+      (dictree--regexp-meta-stack-create
+       dict regexp :reverse reverse :pfxfilter pfxfilter)
+    (trie-regexp-stack (dictree--trie dict) regexp
+		       :reverse reverse :pfxfilter pfxfilter)))
 
 
-(defun dictree-fuzzy-match-stack (dict string distance &optional reverse)
+(defun* dictree-fuzzy-match-stack (dict string distance
+					&key reverse pfxfilter)
   "Return an object that allows fuzzy matches to be accessed
 as if they were a stack.
 
@@ -2199,11 +2260,14 @@ they can be useful in implementing efficient algorithms on
 dict-trees. However, in cases where `dictree-fuzzy-match' is
 sufficient, it is better to use that instead."
   (if (dictree--meta-dict-p dict)
-      (dictree--fuzzy-match-meta-stack-create dict string distance reverse)
-    (trie-fuzzy-match-stack (dictree--trie dict) string distance reverse)))
+      (dictree--fuzzy-match-meta-stack-create
+       dict string distance :reverse reverse :pfxfilter pfxfilter)
+    (trie-fuzzy-match-stack (dictree--trie dict) string distance
+			    :reverse reverse :pfxfilter pfxfilter)))
 
 
-(defun dictree-fuzzy-complete-stack (dict prefix distance &optional reverse)
+(defun* dictree-fuzzy-complete-stack (dict prefix distance
+					   &key reverse pfxfilter)
   "Return an object that allows fuzzy completions to be accessed
 as if they were a stack.
 
@@ -2233,8 +2297,10 @@ they can be useful in implementing efficient algorithms on
 dict-trees. However, in cases where `dictree-fuzzy-complete' is
 sufficient, it is better to use that instead."
   (if (dictree--meta-dict-p dict)
-      (dictree--fuzzy-complete-meta-stack-create dict prefix distance reverse)
-    (trie-fuzzy-complete-stack (dictree--trie dict) prefix distance reverse)))
+      (dictree--fuzzy-complete-meta-stack-create
+       dict prefix distance :reverse reverse :pfxfilter pfxfilter)
+    (trie-fuzzy-complete-stack (dictree--trie dict) prefix distance
+			       :reverse reverse :pfxfilter pfxfilter)))
 
 
 (defun dictree-stack-pop (dictree-stack)
@@ -2290,8 +2356,8 @@ Returns nil if the stack is empty."
 
 
 (defun dictree--stack-first (dictree-stack)
-  "Return the first element from DICTREE-STACK, without removing it.
-Returns nil if the stack is empty."
+  ;; Return the raw first element from DICTREE-STACK, without removing it.
+  ;; Returns nil if the stack is empty.
   (if (trie-stack-p dictree-stack)
       ;; normal dict
       (trie-stack-first dictree-stack)
@@ -2362,7 +2428,7 @@ Returns nil if the stack is empty."
 ;; generators in terms of dictree-stacks.
 
 (heap--when-generators
- (iter-defun dictree-iter (dict &optional type reverse)
+ (cl-iter-defun dictree-iter (dict &key type reverse pfxfilter)
    "Return a dictree iterator object.
 
 Calling `iter-next' on this object will retrieve the next
@@ -2379,13 +2445,15 @@ iterators created from DICT before the modification (in
 particular, calling `iter-next' will give unpredictable
 results). If DICT is a meta-dict, this includes any modifications
 to its constituent dicts."
-   (let ((stack (dictree-stack dict type reverse)))
+   (let ((stack (dictree-stack dict :type type :reverse reverse
+			       :pfxfilter pfxfilter)))
      (while (not (dictree-stack-empty-p stack))
        (iter-yield (dictree-stack-pop stack))))))
 
 
 (heap--when-generators
- (iter-defun dictree-complete-iter (dict prefix &optional reverse)
+ (cl-iter-defun dictree-complete-iter (dict prefix
+					    &key reverse pfxfilter)
    "Return an iterator object for completions of PREFIX in DICT.
 
 Calling `iter-next' on this object will retrieve the next
@@ -2413,7 +2481,8 @@ to its constituent dicts."
 
 
 (heap--when-generators
- (iter-defun dictree-regexp-iter (dict regexp &optional reverse)
+ (cl-iter-defun dictree-regexp-iter (dict regexp
+					  &key reverse pfxfilter)
    "Return an iterator object for REGEXP matches in DICT.
 
 Calling `iter-next' on this object will retrieve the next match
@@ -2446,12 +2515,15 @@ iterators created from DICT before the modification (in
 particular, calling `iter-next' will give unpredictable
 results). If DICT is a meta-dict, this includes any modifications
 to its constituent dicts."
-   (let ((stack (dictree-regexp-stack dict regexp reverse)))
+   (let ((stack (dictree-regexp-stack dict regexp
+				      :reverse reverse
+				      :pfxfilter pfxfilter)))
      (while (not (dictree-stack-empty-p stack))
        (iter-yield (dictree-stack-pop stack))))))
 
 (heap--when-generators
- (iter-defun dictree-fuzzy-match-iter (dict string distance &optional reverse)
+ (cl-iter-defun dictree-fuzzy-match-iter (dict string distance
+					       &key reverse pfxfilter)
    "Return an iterator object for fuzzy matches to STRING in DICT.
 
 Calling `iter-next' on this object will retrieve the next match
@@ -2473,13 +2545,16 @@ iterators created from DICT before the modification (in
 particular, calling `iter-next' will give unpredictable
 results). If DICT is a meta-dict, this includes any modifications
 to its constituent dicts."
-   (let ((stack (dictree-fuzzy-match-stack dict string distance reverse)))
+   (let ((stack (dictree-fuzzy-match-stack dict string distance
+					   :reverse reverse
+					   :pfxfilter pfxfilter)))
      (while (not (dictree-stack-empty-p stack))
        (iter-yield (dictree-stack-pop stack))))))
 
 
 (heap--when-generators
- (iter-defun dictree-fuzzy-complete-iter (dict prefix distance &optional reverse)
+ (cl-iter-defun dictree-fuzzy-complete-iter (dict prefix distance
+						  &key reverse pfxfilter)
    "Return an iterator object for fuzzy completions of PREFIX in DICT.
 
 Calling `iter-next' on this object will retrieve the next fuzzy
@@ -2503,7 +2578,9 @@ iterators created from DICT before the modification (in
 particular, calling `iter-next' will give unpredictable
 results). If DICT is a meta-dict, this includes any modifications
 to its constituent dicts."
-   (let ((stack (dictree-fuzzy-complete-stack dict prefix distance reverse)))
+   (let ((stack (dictree-fuzzy-complete-stack dict prefix distance
+					      :reverse reverse
+					      :pfxfilter pfxfilter)))
      (while (not (dictree-stack-empty-p stack))
        (iter-yield (dictree-stack-pop stack))))))
 
@@ -2513,9 +2590,10 @@ to its constituent dicts."
 ;; ----------------------------------------------------------------
 ;;             Functions for building advanced queries
 
-(defun dictree--query
-    (dict triefun stackfun cachefun cachecreatefun cache-long no-cache arg
-     &optional auxargs rank-function rankfun maxnum reverse filter resultfun)
+(defun* dictree--query
+    (dict triefun stackfun cachefun cachecreatefun cache-long no-cache args
+	  &key maxnum reverse rank-function rankfun stack-rankfun
+	  filter pfxfilter resultfun)
   ;; Return results of querying DICT with argument ARG (and AUXARGS list, if
   ;; any) using TRIEFUN or STACKFUN. If DICT's cache-threshold is non-nil,
   ;; look first for cached result in cache returned by calling CACHEFUN on
@@ -2533,52 +2611,65 @@ to its constituent dicts."
 
   ;; map over all dictionaries in list
   (when (dictree-p dict) (setq dict (list dict)))
-  (let ((sort-function (dictree--construct-sortfun (car dict)))
-	cache results res cache-entry)
+  (let (cache results res cache-entry)
     (dolist (dic dict)
-      (when cachefun (setq cache (funcall cachefun dic)))
-      (cond
 
-       ;; if there's a cache entry with enough results, use it
-       ((and (symbolp rank-function) (symbolp filter)
-	     (setq cache-entry
-		   (when cache
-		     (gethash (list arg auxargs rank-function reverse filter)
-			      cache)))
-	     (or (null (dictree--cache-maxnum cache-entry))
-		 (and maxnum
-		      (<= maxnum (dictree--cache-maxnum cache-entry)))))
-	(setq res (dictree--cache-results cache-entry))
-	;; drop any excess results
-	(when (and maxnum
-		   (or (null (dictree--cache-maxnum cache-entry))
-		       (> (dictree--cache-maxnum cache-entry) maxnum)))
-	  (setcdr (nthcdr (1- maxnum) results) nil)))
+      ;; if there's a cache entry with enough results, use it
+      (if (and cachefun
+	       (or (symbolp rank-function)
+	       	   ;; can be '(t . rankfun) for `dictree-fuzzy-complete'
+	       	   (and (consp rank-function)
+	       		(symbolp (car rank-function))
+	       		(symbolp (cdr rank-function))))
+	       (symbolp filter)
+	       (symbolp pfxfilter)
+	       (setq cache (funcall cachefun dic))
+	       (setq cache-entry
+		     (gethash (list args rank-function reverse filter pfxfilter)
+			      cache))
+	       (or (null (dictree--cache-maxnum cache-entry))
+		   (and maxnum
+			(<= maxnum (dictree--cache-maxnum cache-entry))))
+	       (setq res (dictree--cache-results cache-entry)))
+	  ;; drop any excess results
+	  (when (and maxnum
+		     (or (null (dictree--cache-maxnum cache-entry))
+			 (> (dictree--cache-maxnum cache-entry) maxnum)))
+	    (setq res (cl-subseq res 0 maxnum)))
 
-       (t  ;; if there was nothing useful in the cache, do query and time it
-	(let (time)
-	  (setq time (float-time))
+	;; if there was nothing useful in the cache, do query and time it
+	(let ((time (float-time)))
 	  (setq res
 		(dictree--do-query
-		 dic triefun stackfun arg auxargs rankfun maxnum reverse
-		 (when filter (dictree--wrap-filter filter))))
+		 dic triefun stackfun args rankfun maxnum reverse
+		 (when filter (dictree--wrap-filter filter)) pfxfilter
+		 stack-rankfun))
 	  (setq time (- (float-time) time))
 	  ;; if we're above the dictionary's cache threshold, cache the result
 	  (when (and cachefun (not no-cache)
+		     ;; (or (symbolp rank-function)
+		     ;; 	 ;; can be '(t . rankfun) for `dictree-fuzzy-complete'
+		     ;; 	 (and (consp rank-function)
+		     ;; 	      (symbolp (car rank-function))
+		     ;; 	      (symbolp (cdr rank-function))))
+		     ;; (symbolp filter)
+		     ;; (symbolp pfxfilter)
 		     (dictree--above-cache-threshold-p
-		      time (length arg) (dictree-cache-policy dic)
+		      time (length (car args)) (dictree-cache-policy dic)
 		      (dictree-cache-threshold dic) cache-long))
 	    (setf (dictree-modified dic) t)
 	    ;; create query cache if it doesn't already exist
 	    (funcall cachecreatefun dic)
-	    (puthash (list arg auxargs rank-function reverse filter)
+	    (puthash (list args rank-function reverse filter pfxfilter)
 		     (dictree--cache-create res maxnum)
-		     (funcall cachefun dic))))))
+		     (funcall cachefun dic)))))
 
       ;; merge new result into results list
       (setq results
-	    (dictree--merge results res (or rankfun sort-function)
-			    nil maxnum)))
+	    (dictree--merge
+	     results res
+	     (or rankfun (dictree--construct-sortfun (car dict)))
+	     maxnum)))
 
 
     ;; return results list, applying RESULTFUN if specified, otherwise just
@@ -2591,51 +2682,57 @@ to its constituent dicts."
 
 
 (defun dictree--do-query
-   (dict triefun stackfun arg &optional auxargs rankfun maxnum reverse filter)
+    (dict triefun stackfun args
+	  &optional rankfun maxnum reverse filter pfxfilter stack-rankfun)
   ;; Return first MAXNUM results of querying DICT with argument ARG (and
   ;; AUXARGS list, if any) using TRIEFUN or STACKFUN that satisfy FILTER,
   ;; ordered according to RANKFUN (defaulting to "lexicographic" order).
 
-  ;; for a meta-dict, use a dictree-stack
-  (if (dictree--meta-dict-p dict)
-      (let ((stack (apply stackfun
-			  (append (list dict arg) auxargs (list reverse))))
-	    (heap (when rankfun
-		    (heap-create   ; heap order is inverse of rank order
-			(if reverse
-			    rankfun
-			  (lambda (a b)
-			    (not (funcall rankfun a b))))
-			(1+ maxnum))))
-	    (i 0) res results)
-	;; pop MAXNUM results from the stack
-	(while (and (or (null maxnum) (< i maxnum))
-		    (setq res (dictree--stack-pop stack)))
-	  ;; check result passes FILTER
-	  (when (or (null filter) (funcall filter res))
-	    (if rankfun
-		(heap-add heap res)   ; for ranked query, add to heap
-	      (push res results))     ; for lexicographic query, add to list
-	    (incf i)))
-	(if (null rankfun)
-	    ;; for lexicographic query, reverse and return result list (we
-	    ;; built it backwards)
-	    (nreverse results)
-	  ;; for ranked query, pass rest of results through heap
-	  (while (setq res (dictree--stack-pop stack))
-	    (heap-add heap res)
-	    (heap-delete-root heap))
-	  ;; extract results from heap
-	  (while (setq res (heap-delete-root heap))
-	    (push res results))
-	  results))  ; return result list
+  (if (dictree--p dict)
+      ;; for a normal dict, call corresponding trie function on dict's
+      ;; trie. Note: could use a dictree-stack here too - would it be more
+      ;; efficient?
+      (apply triefun
+	     (append (list (dictree--trie dict)) args
+		     (list :maxnum maxnum :reverse reverse
+			   :rankfun rankfun
+			   :filter filter :pfxfilter pfxfilter)))
 
-    ;; for a normal dict, call corresponding trie function on dict's
-    ;; trie. Note: could use a dictree-stack here too - would it be more
-    ;; efficient?
-    (apply triefun
-	   (append (list (dictree--trie dict) arg) auxargs
-		   (list rankfun maxnum reverse filter)))))
+    ;; for a meta-dict, use a dictree-stack
+    (unless stack-rankfun (setq stack-rankfun rankfun))
+    (let ((stack (apply stackfun
+			(append (list dict) args
+				(list :reverse reverse
+				      :pfxfilter pfxfilter))))
+	  (heap (when stack-rankfun
+		  (heap-create   ; heap order is inverse of rank order
+		   (if reverse stack-rankfun
+		     (lambda (a b) (not (funcall stack-rankfun a b))))
+		   (1+ maxnum))))
+	  (i 0) res results)
+      ;; pop MAXNUM results from the stack
+      (while (and (or (null maxnum) (< i maxnum))
+		  (setq res (dictree--stack-pop stack)))
+	;; check result passes FILTER
+	(when (or (null filter) (funcall filter res))
+	  (if stack-rankfun
+	      (heap-add heap res)   ; for ranked query, add to heap
+	    (push res results))     ; for lexicographic query, add to list
+	  (incf i)))
+      (if (null stack-rankfun)
+	  ;; for lexicographic query, reverse and return result list (we
+	  ;; built it backwards)
+	  (nreverse results)
+	;; for ranked query, pass rest of results through heap
+	(while (setq res (dictree--stack-pop stack))
+	  (when (or (null filter) (funcall filter res))
+	    (heap-add heap res)
+	    (heap-delete-root heap)))
+	;; extract results from heap
+	(while (setq res (heap-delete-root heap))
+	  (push res results))
+	results))  ; return result list
+    ))
 
 
 
@@ -2643,9 +2740,10 @@ to its constituent dicts."
 ;; ----------------------------------------------------------------
 ;;                        Completing
 
-(defun dictree-complete
-  (dict prefix
-   &optional rank-function maxnum reverse filter resultfun no-cache)
+(defun* dictree-complete
+    (dict prefix
+	  &key maxnum reverse rank-function filter pfxfilter
+	  resultfun no-cache)
   "Return an alist containing all completions of PREFIX in DICT
 along with their associated data, sorted according to
 RANK-FUNCTION (defaulting to \"lexicographic\" order, i.e. the
@@ -2667,7 +2765,7 @@ identical keys, use a meta-dictionary; see
 If optional argument RANK-FUNCTION is t, the completions are
 sorted according to the dictionary's rank-function (see
 `dictree-create'). Any non-nil value that *is* a function
-over-rides this. In that case, RANK-FUNCTION should accept two
+overrides this. In that case, RANK-FUNCTION should accept two
 arguments, both cons cells. The car of each contains a completion
 from DICT (of the same type as PREFIX), the cdr contains its
 associated data. The RANK-FUNCTION should return non-nil if first
@@ -2687,6 +2785,12 @@ arguments: the completion, and its associated data. If the filter
 function returns nil, the completion is not included in the
 results, and doesn't count towards MAXNUM.
 
+The PFXFILTER argument sets a prefix filter function. If
+supplied, it is called with one argument: a sequence of the same
+type as PREFIX. If it returns nil, all completions with that
+sequence as a prefix will be ignored. When PFXFILTER suffices, it
+is more efficient than using FILTER for the same purpose.
+
 RESULTFUN defines a function used to process results before
 adding them to the final result list. If specified, it should
 accept two arguments: a key and its associated data. Its return
@@ -2697,14 +2801,18 @@ default key-data cons cell."
    dict #'trie-complete #'dictree-complete-stack
    #'dictree-complete-cache #'dictree-create-complete-cache
    nil no-cache  ; cache short PREFIXes
-   prefix nil
-   rank-function
-   (when rank-function
-     (if (functionp rank-function)
-	 (dictree--wrap-rankfun rank-function)
-       (dictree--wrap-rankfun
-	(dictree--rank-function (if (listp dict) (car dict) dict)))))
-   maxnum reverse filter resultfun))
+   (list prefix)
+   :rank-function rank-function
+   :maxnum maxnum
+   :reverse reverse
+   :rankfun (when rank-function
+	      (dictree--wrap-rankfun
+	       (if (eq rank-function t)
+		   (dictree--rank-function (if (listp dict) (car dict) dict))
+		 rank-function)))
+   :filter filter
+   :pfxfilter pfxfilter
+   :resultfun resultfun))
 
 
 (defun dictree-collection-function (dict string predicate all)
@@ -2718,8 +2826,9 @@ following as the COLLECTION argument of any of those functions:
 Note that PREDICATE will be called with two arguments: the
 completion, and its associated data."
   (let ((completions
-	 (dictree-complete dict string nil nil nil predicate
-			   (lambda (key _data) key))))
+	 (dictree-complete dict string
+			   :filter predicate
+			   :resultfun (lambda (key _data) key))))
     (if all completions (try-completion "" completions))))
 
 
@@ -2728,9 +2837,9 @@ completion, and its associated data."
 ;; ----------------------------------------------------------------
 ;;                      Regexp search
 
-(defun dictree-regexp-search
-  (dict regexp
-   &optional rank-function maxnum reverse filter resultfun no-cache)
+(defun* dictree-regexp-search
+    (dict regexp &key maxnum reverse rank-function
+	  filter pfxfilter resultfun no-cache)
   "Return an alist containing all matches for REGEXP in DICT
 along with their associated data, in the order defined by
 RANKFUN, defauling to \"lexicographic\" order. If REVERSE is
@@ -2810,6 +2919,12 @@ non-shy grouping constructs, the first argument is of the form
 If the FILTER function returns nil, the match is not included in
 the results, and does not count towards MAXNUM.
 
+The PFXFILTER argument sets a prefix filter function. If
+supplied, it is called with one argument: a sequence of the same
+type as PREFIX. If it returns nil, all matches with that sequence
+as a prefix will be ignored. When PFXFILTER suffices, it is more
+efficient than using FILTER for the same purpose.
+
 
 RESULTFUN defines a function used to process results before
 adding them to the final result list. If specified, it should
@@ -2826,14 +2941,18 @@ list, instead of the default key-data cons cell."
        nil  ; cache short REGEXP if it ends in .*
      t)     ; cache long REGEXPs otherwise
    no-cache
-   regexp nil
-   rank-function
-   (when rank-function
-     (if (functionp rank-function)
-	 (dictree--wrap-regexp-rankfun rank-function)
-       (dictree--wrap-regexp-rankfun
-	(dictree-rank-function (if (listp dict) (car dict) dict)))))
-   maxnum reverse filter resultfun))
+   (list regexp)
+   :maxnum maxnum
+   :reverse reverse
+   :rank-function rank-function
+   :rankfun (when rank-function
+	      (dictree--wrap-regexp-rankfun
+	       (if (eq rank-function t)
+		   (dictree-rank-function (if (listp dict) (car dict) dict))
+		 rank-function)))
+   :filter filter
+   :pfxfilter pfxfilter
+   :resultfun resultfun))
 
 
 
@@ -2841,9 +2960,9 @@ list, instead of the default key-data cons cell."
 ;; ----------------------------------------------------------------
 ;;                      Fuzzy queries
 
-(defun dictree-fuzzy-match
-  (dict string distance
-   &optional rank-function maxnum reverse filter resultfun no-cache)
+(defun* dictree-fuzzy-match
+    (dict string distance &key maxnum reverse rank-function
+	  filter pfxfilter resultfun no-cache)
   "Return matches for STRING in DICT within Lewenstein DISTANCE
 \(edit distance\) of STRING along with their associated data, in
 the order defined by RANKFUN, defauling to \"lexicographic\"
@@ -2904,6 +3023,12 @@ arguments: a (KEY . DIST) cons cell, and DATA. If the filter
 function returns nil, the match is not included in the results,
 and does not count towards MAXNUM.
 
+The PFXFILTER argument sets a prefix filter function. If
+supplied, it is called with one argument: a sequence of the same
+type as PREFIX. If it returns nil, all matches with that sequence
+as a prefix will be ignored. When PFXFILTER suffices, it is more
+efficient than using FILTER for the same purpose.
+
 RESULTFUN defines a function used to process results before
 adding them to the final result list. If specified, it should
 accept two arguments: a (KEY . DIST) cons cell, and DATA. Its
@@ -2915,28 +3040,30 @@ of the default key-dist-data list."
    dict #'trie-fuzzy-match #'dictree-fuzzy-match-stack
    #'dictree-fuzzy-match-cache #'dictree-create-fuzzy-match-cache
    t no-cache  ; cache long STRINGs
-   string (list distance)
-   rank-function
-   (when rank-function
-     (cond
-      ((eq rank-function 'distance) t)
-      ((functionp rank-function) (dictree--wrap-fuzzy-rankfun rank-function))
-      ((eq rank-function t)
-       (dictree--wrap-fuzzy-rankfun
-	(dictree-rank-function (if (listp dict) (car dict) dict))))))
-   maxnum reverse filter resultfun))
+   (list string distance)
+   :maxnum maxnum
+   :reverse reverse
+   :rank-function rank-function
+   :rankfun (dictree--construct-fuzzy-trie-rankfun
+	     rank-function (if (listp dict) (car dict) dict))
+   :stack-rankfun (dictree--construct-fuzzy-match-rankfun
+		   rank-function  (if (listp dict) (car dict) dict))
+   :filter filter
+   :pfxfilter pfxfilter
+   :resultfun resultfun))
 
 
-(defun dictree-fuzzy-complete
-  (dict prefix distance
-   &optional rank-function maxnum reverse filter resultfun no-cache)
+(defun* dictree-fuzzy-complete
+    (dict prefix distance
+	  &key maxnum reverse rank-function
+	  filter pfxfilter resultfun no-cache)
   "Return completion of prefixes in DICT within Lewenstein DISTANCE
 \(edit distance\) of PREFIX along with their associated data, in
-the order defined by RANKFUN, defauling to \"lexicographic\"
-order. If REVERSE is non-nil, the matches are sorted in the
-reverse order. Returns nil if no completions are found.
+the order defined by RANKFUN, defauling to lexicographic order.
+If REVERSE is non-nil, the matches are sorted in the reverse
+order. Returns nil if no completions are found.
 
-Returns a list of completions, with elements of the form:
+Returns a list of completions with elements of the form:
 
     ((KEY DIST PFXLEN) . DATA)
 
@@ -2958,15 +3085,41 @@ DICT. If PREFIX is a string, it must be possible to apply
 `string' to individual elements of DICT keys. The KEYs returned
 in the list will be sequences of the same type as PREFIX.
 
-DISTANCE must be an integer, and specifies the maximum Lewenstein
-distance \(edit distances\) of prefixes from PREFIX.
+
+DISTANCE is a positive integer specifying the maximum Lewenstein
+distance prefixes from PREFIX. \(Note that DISTANCE=0 will not
+give meaningful results; use `trie-complete' instead.\)
+
+DISTANCE can also be a cons cell \(LENGTH . DISTANCE\) containing
+two positive integers. In this case, the first LENGTH elements of
+PREFIX must be matched exactly, and the remaining elements must
+be within the specified Lewenstain DISTANCE.
 
 
-If optional argument RANK-FUNCTION is the symbol `distance', the
-matches are sorted by increasing Lewenstein distance of their
-prefix \(with same-distance prefixes ordered
-lexicographically\). If it is t, the matches are sorted according
-to the dictionary's rank-function (see `dictree-create').
+If optional argument RANK-FUNCTION is the symbol `ranked', the
+matches are sorted according to the dictionary's
+rank-function (see `dictree-create').
+
+If RANK-FUNCTION is t, the matches are sorted by increasing
+Lewenstein distance of their prefix, with same-distance prefixes
+ordered lexicographically.
+
+If RANK-FUNCTION is a cons cell of the form
+
+    (t . RANKFUN)
+
+then matches are again ordered by increasing Lewenstein distance
+of their prefix, but with same-distance prefixes ordered by
+RANKFUN. If RANKFUN is the symbol `ranked', same-distance
+prefixes are ordered by the dictionary's rank-function (see
+`dictree-create'). Otherwise, RANKFUN should take two arguments,
+both of the form
+
+    (KEY . DATA)
+
+where KEY is a key from the trie and DATA is its associated data.
+RANKFUN should return non-nil if first argument is ranked
+strictly higher than the second, nil otherwise.
 
 Any other non-nil value of RANK-FUNCTION should be a function
 that accepts two arguments, both of the form:
@@ -2987,17 +3140,24 @@ of the result. Ignored for dictionaries that do not have
 fuzzy-match caching enabled.
 
 
-The FILTER argument sets a filter function for the matches. If
-supplied, it is called for each possible match with two
-arguments: a (KEY DIST PFXLEN) list, and DATA. If the filter
-function returns nil, the match is not included in the results,
-and does not count towards MAXNUM.
+FILTER sets a filter function for the matches. If supplied, it is
+called for each possible completion with two arguments: a
+\(KEY DIST PFXLEN\) list, and DATA. If FILTER returns nil, that
+match is not included in the results, and does not count towards
+MAXNUM.
+
+The PFXFILTER argument sets a prefix filter function. If
+supplied, it is called with one argument: a sequence of the same
+type as PREFIX. If it returns nil, all completions with that
+sequence as a prefix will be ignored. When PFXFILTER suffices, it
+is more efficient than using FILTER for the same purpose.
+
 
 RESULTFUN defines a function used to process results before
 adding them to the final result list. If specified, it should
-accept two arguments: a (KEY DIST PFXLEN) list, and DATA. Its
+accept two arguments: a \(KEY DIST PFXLEN\) list, and DATA. Its
 return value is what gets added to the final result list, instead
-of the default key-dist-data list."
+of the default key-dist-pfxlen-data list."
 
   ;; run fuzzy-complete query
   (dictree--query
@@ -3005,15 +3165,16 @@ of the default key-dist-data list."
    #'dictree-fuzzy-complete-cache #'dictree-create-fuzzy-complete-cache
    nil no-cache  ; cache short PREFIXes
    prefix (list distance)
-   rank-function
-   (when rank-function
-     (cond
-      ((eq rank-function 'distance) t)
-      ((functionp rank-function) (dictree--wrap-fuzzy-rankfun rank-function))
-      ((eq rank-function t)
-       (dictree--wrap-fuzzy-rankfun
-	(dictree-rank-function (if (listp dict) (car dict) dict))))))
-   maxnum reverse filter resultfun))
+   :maxnum maxnum
+   :reverse reverse
+   :rank-function rank-function
+   :rankfun (dictree--construct-fuzzy-trie-rankfun
+	     rank-function (if (listp dict) (car dict) dict))
+   :stack-rankfun (dictree--construct-fuzzy-complete-rankfun
+		   rank-function (if (listp dict) (car dict) dict))
+   :filter filter
+   :pfxfilter pfxfilter
+   :resultfun resultfun))
 
 
 
@@ -3022,8 +3183,8 @@ of the default key-dist-data list."
 ;;                    Persistent storage
 
 (defun dictree-save (dict &optional compilation)
-  "Save dictionary DICT to its associated file.
-Use `dictree-write' to save to a different file.
+  "Save dictionary DICT to its associated directory.
+Use `dictree-write' to save to a different directory.
 
 Optional argument COMPILATION determines whether to save the
 dictionary in compiled or uncompiled form. The default is to save
@@ -3031,8 +3192,7 @@ both forms. See `dictree-write'.
 
 Interactively, DICT is read from the mini-buffer."
   (interactive (list (read-dict "Dictionary: ")))
-  (when (and (called-interactively-p 'any) (symbolp dict))
-    (setq dict (symbol-value dict)))
+  (when (symbolp dict) (setq dict (symbol-value dict)))
 
   (let ((filename (dictree-filename dict)))
     ;; if dictionary has no associated file, prompt for one
@@ -3054,77 +3214,86 @@ Interactively, DICT is read from the mini-buffer."
 
 
 (defun dictree-write (dict &optional filename overwrite compilation)
-  "Write dictionary DICT to file FILENAME.
-Defaults to dictionary's current filename if FILENAME is not
-specified (like `dictree-save').
+  "Write dictionary DICT to the file FILENAME.
+Defaults to the file the dictionary was loaded from, if any.
+\(See also `dictree-save'.\)
+
+If FILENAME is just a directory, DICT is written to a file under
+that directory with the same name as DICT.
 
 If optional argument OVERWRITE is non-nil, no confirmation will
 be asked for before overwriting an existing file.
 
 The default is to create both compiled and uncompiled versions of
-the dictionary, with extensions .elc and .el respectively (if
-FILENAME has either of these extensions, they are stripped off
-before proceeding). The compiled version is always used in
-preference to the uncomplied version, as it loads
-faster. However, only the uncompiled version is portable between
-different Emacs versions.
+the dictionary, with extensions .elc and .el respectively. The
+compiled version is always used in preference to the uncomplied
+version, as it loads faster. However, only the uncompiled version
+is portable between different Emacs versions.
 
 If optional argument COMPILATION is the symbol `compiled', only
 the compiled version will be created, whereas if it is the symbol
 `uncompiled', only the uncompiled version will be created.
 
-Interactively, DICT and FILENAME are read from the mini-buffer,
+Interactively, DICT and DIRECTORY are read from the mini-buffer,
 and OVERWRITE is the prefix argument."
   (interactive (list (read-dict "Dictionary: ")
-		     (read-file-name "Write dictionary to file: "
-				     nil "")
+		     (read-file-name
+		      "Write dictionary to file/directory: " nil "")
 		     current-prefix-arg))
-  (when (and (called-interactively-p 'any) (symbolp dict))
-    (setq dict (symbol-value dict)))
-  ;; default to DICT's current file, if any
-  (when (or (null filename)
-	    (and (called-interactively-p 'any) (string= filename "")))
+  (when (symbolp dict) (setq dict (symbol-value dict)))
+  ;; default to filename DICT was loaded from, if any
+  (cond
+   ((and (or (null filename)
+	     (and (called-interactively-p 'any) (string= filename "")))
+	 (dictree-filename dict))
     (setq filename (dictree-filename dict)))
+   ((file-directory-p filename)
+    (setq filename (concat filename (dictree-name dict))))
+   ((string= (substring filename -3) ".el")
+    (setq filename (substring filename 0 -3)))
+   ((string= (substring filename -4) ".elc")
+    (setq filename (substring filename 0 -4))))
+
   (if (null filename)
       (progn
 	(message "Dictionary %s NOT written" (dictree-name dict))
-	nil)  ; indicate dictionary wasn't written
+	nil)  ; return nil to indicate failure
 
-    (let (dictname buff tmpfile)
-      ;; remove any .el(c) extension from filename
-      (cond
-       ((and (> (length filename) 3)
-	     (string= (substring filename -3) ".el"))
-	(setq filename (substring filename 0 -3)))
-       ((and (> (length filename) 4)
-	     (string= (substring filename -4) ".elc"))
-	(setq filename (substring filename 0 -4))))
-      ;; create saved dictionary name from filename
-      (setq dictname (file-name-nondirectory filename))
+    (let ((dictname (file-name-sans-extension (file-name-nondirectory filename)))
+	  buff tmpfile)
 
-      (save-excursion
-	;; create a temporary file
-	(setq buff
-	      (find-file-noselect
-	       (setq tmpfile (make-temp-file dictname))))
-	(set-buffer buff)
-	;; call the appropriate write function to write the dictionary code
-	(if (dictree--meta-dict-p dict)
-	    (dictree--write-meta-dict-code dict dictname filename)
-	  (dictree--write-dict-code dict dictname filename))
-	(save-buffer)
-	(kill-buffer buff))
-
-      ;; prompt to overwrite if necessary
-      (when (or overwrite
+      ;; prompt for confirmation if necessary
+      (when (or (string= dictname (dictree-name dict))
 		(and
-		 (or (eq compilation 'compiled)
-		     (not (file-exists-p (concat filename ".el"))))
-		 (or (eq compilation 'uncompiled)
-		     (not (file-exists-p (concat filename ".elc")))))
-		(y-or-n-p
-		 (format "File %s already exists. Overwrite? "
-			 (concat filename ".el(c)"))))
+		 (y-or-n-p (format "Change dictionary name? "))
+		 (or overwrite
+		     (and
+		      (or (eq compilation 'compiled)
+			  (not (file-exists-p (concat filename ".el"))))
+		      (or (eq compilation 'uncompiled)
+			  (not (file-exists-p (concat filename ".elc")))))
+		     (y-or-n-p
+		      (format "File %s already exists. Overwrite? "
+			      (concat filename ".el(c)"))))))
+	(setf (dictree-name dict) dictname)
+	(setf (dictree-filename dict) filename)
+
+	(message "Writing dictionary %s to %s..." dictname filename)
+	(save-excursion
+	  ;; create a temporary file
+	  (setq buff
+		(find-file-noselect
+		 (setq tmpfile (make-temp-file dictname))))
+	  (set-buffer buff)
+	  ;; byte-compiler seems to b0rk on dos line-endings in some Emacsen
+	  (set-buffer-file-coding-system 'utf-8-unix)
+	  ;; call the appropriate write function to write the dictionary code
+	  (if (dictree--meta-dict-p dict)
+	      (dictree--write-meta-dict-code dict)
+	    (dictree--write-dict-code dict))
+	  (save-buffer)
+	  (kill-buffer buff))
+
 	(condition-case nil
 	    (progn
 	      ;; move the uncompiled version to its final destination
@@ -3134,33 +3303,24 @@ and OVERWRITE is the prefix argument."
 	      ;; destination
 	      (unless (eq compilation 'uncompiled)
 		(if (save-window-excursion
-		      (let ((byte-compile-disable-print-circle t)
-			    err)
-			(setq err (byte-compile-file tmpfile))
-			err))
+;;		      (let ((byte-compile-disable-print-circle t))
+			(byte-compile-file tmpfile));)
 		    (rename-file (concat tmpfile ".elc")
-				 (concat filename ".elc") t)
+				 (concat filename ".elc")
+				 'overwrite)
 		  (error ""))))
 	  (error "Error writing dictionary. Dictionary %s NOT saved"
 		 dictname))
 
-	;; if writing to a different name, unload dictionary under old
-	;; name and reload it under new one
-	(setf (dictree-modified dict) nil)
-	(setf (dictree-filename dict) filename)
-	(unless (string= dictname (dictree-name dict))
-	  (dictree-unload dict)
-	  (dictree-load filename)))
-
+	(setf (dictree-modified dict) nil))
       (delete-file tmpfile)
-      (message "Dictionary %s saved to %s" dictname filename)
+      (message "Writing dictionary %s to %s...done" dictname filename)
       t)  ; return t to indicate dictionary was successfully saved
     ))
 
 
 
-(defun dictree-save-modified (&optional dict ask compilation force
-					no-fail-query)
+(defun dictree-save-modified (&optional dict ask compilation force)
   "Save all modified dictionaries that have their autosave flag set.
 Returns t if all dictionaries were successfully saved. Otherwise,
 inform the user about the dictionaries which failed to save
@@ -3180,25 +3340,24 @@ save both forms. See `dictree-write'.
 If optional argument FORCE is non-nil, save modified dictionaries
 irrespective of their autosave flag.
 
-If optional argument NO-FAIL-QUERY is non-nil, the user will not
-be queried if a dictionary fails to save properly, and the return
-value is always nil.
-
 Interactively, FORCE is the prefix argument, and the user will not be
 asked whether they wish to continue after a failed save."
   (interactive "P")
 
-  ;; sort out arguments
+  ;; sort out arguments.
+  ;; Note: We use a lazy hack in the `interactive' form, and pass FORCE
+  ;;       argument as DICT, which gets sorted out here.
   (when (and (called-interactively-p 'any) dict) (setq dict nil force t))
-  (when (dictree-p dict) (setq dict (list dict)))
+  (when (symbolp dict) (setq dict (symbol-value dict)))
+  (cond
+   ((dictree-p dict) (setq dict (list dict)))
+   ((null dict) (setq dict dictree-loaded-list)))
 
   ;; For each dictionary in list / each loaded dictionary, check if
   ;; dictionary has been modified. If so, save it if autosave is set or
   ;; FORCE is non-nil.
   (let (save-failures)
-    (dolist (dic (if (null dict)
-		     dictree-loaded-list
-		   dict))
+    (dolist (dic dict)
       (when (and (dictree-modified dic)
 		 (or force (dictree-autosave dic))
 		 (or (not ask)
@@ -3210,22 +3369,14 @@ asked whether they wish to continue after a failed save."
 	      (setf (dictree-modified dic) nil))
 	  (error (push dic save-failures)))))
 
-    ;; prompt if dictionary saving failed
-    (if save-failures
-	(if (or (called-interactively-p 'any) no-fail-query)
-	    (progn
-	      (message
-	       (concat
-		"Error: failed to save the following modified "
-		"dictionaries: "
-		(mapconcat #'dictree--name save-failures ", ")))
-	      nil)
-	  (yes-or-no-p
-	   (concat "Error: failed to save the following modified "
-		   "dictionaries: "
-		   (mapconcat #'dictree--name save-failures ", ")
-		   "; continue anyway? ")))
-      t)))
+    ;; warn if dictionary saving failed
+    (when save-failures
+	(message (concat
+		  "Error: failed to save the following modified "
+		  "dictionaries: "
+		  (mapconcat #'dictree-name save-failures ", ")))
+	nil)  ; return nil to indicate failure
+    t))  ; return t to indicate success
 
 
 ;; Add the dictree-save-modified function to the kill-emacs-hook to save
@@ -3240,49 +3391,37 @@ asked whether they wish to continue after a failed save."
 Returns the dictionary if successful, nil otherwise.
 
 Interactively, FILE is read from the mini-buffer."
-  (interactive (list (read-dict "Load dictionary: " nil nil t t)))
+  (interactive (list (read-dict "Load dictionary from file: " nil nil t)))
 
-  ;; sort out dictionary name and file name
-  (if (or (symbolp file) (dictree-p file))
-      (message "Dictionary %s already loaded" (dictree-name file))
+  (cond
+   ;; if we've be passed an already-loaded dictionary, just return it
+   ((dictree-p file) file)
+   ((and (symbolp file)
+	 (condition-case nil
+	     (dictree-p (symbol-value file))
+	   (void-variable nil)))
+    (symbol-value file))
 
-    ;; load the dictionary
+   (t  ;; otherwise, load the dictionary
+    (when (symbolp file) (setq file (symbol-name file)))
     (if (not (load file t))
 	;; if loading failed, throw error interactively, return nil
 	;; non-interactively
 	(if (called-interactively-p 'any)
-	    (error "Cannot open dictionary file: %s" file)
+	    (error "Cannot load dictionary file: %s" file)
 	  nil)
 
-      (let (dictname dict)
-	(setq dictname
-	      (file-name-nondirectory (file-name-sans-extension file))
-	      dict (symbol-value (intern-soft dictname)))
+      (let* ((dictname (file-name-nondirectory (file-name-sans-extension file)))
+	     (dict (symbol-value (intern-soft dictname))))
 	(if (not (dictree-p dict))
 	    ;; if loading failed, throw error interactively, return nil
 	    ;; non-interactively
 	    (if (called-interactively-p 'any)
-		(error "Error loading dictionary file: %s" file)
+		(error "Error loading dictionary from file: %s" file)
 	      nil)
-
-	  ;; ensure the dictionary name and file name associated with
-	  ;; the dictionary match the file it was loaded from
-	  (when (and (string= (file-name-nondirectory file) file)
-		     (setq file
-			   (locate-file file load-path load-suffixes)))
-	    (setf (dictree-filename dict) file))
-	  (setf (dictree-name dict) dictname)
-
-	  ;; make sure the dictionary is in dictree-loaded-list
-	  ;; (normally the lisp code in the dictionary itself should do
-	  ;; this, but just to make sure...)
-	  (unless (memq dict dictree-loaded-list)
-	    (push dict dictree-loaded-list))
+	  ;; return dictionary on sucess
 	  (message (format "Loaded dictionary %s" dictname))
-
-	  ;; return dictionary
-	  dict)))))
-
+	  dict))))))
 
 
 (defun dictree-unload (dict &optional dont-save)
@@ -3294,24 +3433,21 @@ Interactively, DICT is read from the mini-buffer, and DONT-SAVE
 is the prefix argument."
   (interactive (list (read-dict "Dictionary: ")
 		     current-prefix-arg))
-  (when (and (called-interactively-p 'any) (symbolp dict))
-    (setq dict (symbol-value dict)))
+  (when  (symbolp dict) (setq dict (symbol-value dict)))
 
-  ;; if dictionary has been modified, autosave is set and not overidden,
-  ;; save it first
+  ;; possible save dictionary first
   (when (and (dictree-modified dict)
 	     (null dont-save)
 	     (or (eq (dictree-autosave dict) t)
 		 (and (eq (dictree-autosave dict) 'ask)
 		      (y-or-n-p
 		       (format
-			"Dictionary %s modified.\
- Save before unloading? "
+			"Dictionary %s modified. Save before unloading? "
 			(dictree-name dict))))))
     (dictree-save dict))
 
-  ;; if unloading a meta-dict, remove reference to it from constituent
-  ;; dictionaries' meta-dict-list cell
+  ;; remove references to meta-dict from constituent dictionaries'
+  ;; meta-dict-list cell
   (when (dictree--meta-dict-p dict)
     (mapc
      (lambda (dic)
@@ -3321,165 +3457,56 @@ is the prefix argument."
 
   ;; remove dictionary from list of loaded dictionaries and unload it
   (setq dictree-loaded-list (delq dict dictree-loaded-list))
-  ;; We used `unintern' here before, but that's too dangerous!
-  (makunbound (dictree-name dict))
+  ;; used `unintern' here before, but that's too dangerous!
+  (makunbound (intern (dictree-name dict)))
   (message "Dictionary %s unloaded" (dictree-name dict)))
 
 
+(defun dictree-revert (dict)
+  "Revert dictionary DICT to version from it associated file."
+  (interactive (list (read-dict "Dictionary to revert: ")))
 
-(defun dictree--write-dict-code (dict dictname filename)
-  ;; Write code for normal dictionary DICT to current buffer, giving it
-  ;; the name DICTNAME and file FILENAME.
-  (let (hashcode tmpdict tmptrie lookup-alist
-	complete-alist regexp-alist fuzzy-match-alist fuzzy-complete-alist)
+  (let ((filename (dictree-filename dict)))
+    (when (and (dictree-modified dict)
+	       (or (not (called-interactively-p 'any))
+		   (yes-or-no-p
+		    (format "Dictionary %s already loaded and has\
+ unsaved changes. Revert from file %s? "
+			    (dictree-name dict) filename))))
+    (dictree-unload dict 'dont-save)
+    (dictree-load filename))))
+
+
+
+(defun dictree--write-dict-code (dict)
+  ;; Write code for normal dictionary DICT to current buffer
+  (let ((dictname (dictree-name dict))
+	(tmpdict (dictree--copy dict))
+	tmptrie hashcode)
 
     ;; --- convert trie data ---
-    ;; if dictionary doesn't use any custom save functions, write
-    ;; dictionary's trie directly as is
-    (setq tmptrie (dictree--trie dict))
-    ;; otherwise, create a temporary trie and populate it with the
-    ;; converted contents of the dictionary's trie
-    (when (or (dictree--data-savefun dict)
-	      (dictree--plist-savefun dict))
-      (setq tmptrie
-	    (trie-create-custom
-	     (trie-comparison-function tmptrie)
-	     :createfun (trie--createfun tmptrie)
-	     :insertfun (trie--insertfun tmptrie)
-	     :deletefun (trie--deletefun tmptrie)
-	     :lookupfun (trie--lookupfun tmptrie)
-	     :mapfun (trie--mapfun tmptrie)
-	     :emptyfun (trie--emptyfun tmptrie)
-	     :stack-createfun (trie--stack-createfun tmptrie)
-	     :stack-popfun (trie--stack-popfun tmptrie)
-	     :stack-emptyfun (trie--stack-emptyfun tmptrie)))
-      (trie-mapc
-       (lambda (key cell)
-	 (trie-insert tmptrie key
-		      (dictree--cell-create
-		       (funcall (or (dictree--data-savefun dict)
-				    #'identity)
-				(dictree--cell-data cell))
-		       (funcall (or (dictree--plist-savefun dict)
-				    #'identity)
-				(dictree--cell-plist cell)))))
-       (dictree--trie dict))
+    ;; if dictionary uses custom save functions, create a temporary writable
+    ;; trie and generate code to convert it back to original form
+    (if (or (dictree--data-savefun dict)
+	    (dictree--plist-savefun dict))
+	(setq tmptrie (dictree--generate-writable-trie dict)
+	      hashcode (concat hashcode
+			       (dictree--generate-triecode dict)))
+      ;; otherwise, can use dictionary's trie directly
+      (setq tmptrie (dictree--trie dict)))
 
-      ;; generate code to convert contents of trie back to original form
-      (setq hashcode
-	    (concat
-	     hashcode
-	     " (trie-map\n"
-	     "  (lambda (key cell)\n"
-	     "     (dictree--cell-create\n"
-	     (if (dictree--data-loadfun dict)
-		 (concat
-		  "(funcall (dictree--data-loadfun " dictname ")\n"
-		  "         (dictree--cell-data cell))\n")
-	       "   (dictree--cell-data cell)\n")
-	     (if (dictree--plist-loadfun dict)
-		 (concat
-		  "(funcall (dictree--plist-loadfun " dictname ")\n"
-		  "         (dictree--cell-plist cell))))\n")
-	       "   (dictree--cell-plist cell)))\n")
-	     " (dictree--trie " dictname "))\n")))
-
-
-    ;; --- convert caches for writing to file ---
-    ;; hash tables have no read syntax in older Emacsen, so we convert
-    ;; them to alists for writing
+    ;; hash tables have no read syntax in older Emacsen
     (unless (featurep 'hashtable-print-readable)
-      ;; convert lookup cache hash table to alist, if it exists
-      (when (dictree--lookup-cache dict)
-	(maphash
-	 (lambda (key val)
-	   (push
-	    (cons key
-		  (cons (mapcar #'car (dictree--cache-results val))
-			(dictree--cache-maxnum val)))
-	    lookup-alist))
-	 (dictree--lookup-cache dict))
-	;; generate code to reconstruct the lookup hash table
-	(setq hashcode
-	      (concat
-	       hashcode
-	       "(let ((lookup-cache (make-hash-table :test #'equal))\n"
-	       "      (trie (dictree--trie " dictname ")))\n"
-	       "  (mapc\n"
-	       "   (lambda (entry)\n"
-	       "     (puthash\n"
-	       "      (car entry)\n"
-	       "      (dictree--cache-create\n"
-	       "       (mapcar\n"
-	       "        (lambda (key)\n"
-	       "          (cons key (trie-member trie key)))\n"
-	       "        (dictree--cache-results (cdr entry)))\n"
-	       "       (dictree--cache-maxnum (cdr entry)))\n"
-	       "      lookup-cache))\n"
-	       "   (dictree--lookup-cache " dictname "))\n"
-	       "  (setf (dictree--lookup-cache " dictname ")\n"
-	       "        lookup-cache))\n")))
+      (setq hashcode
+	    (concat hashcode
+		    (dictree--generate-dict-hashcode dict tmpdict))))
 
-      ;; convert query caches, if they exist
-      (dolist (cache-details
-	       '((dictree--complete-cache complete-alist)
-		 (dictree--regexp-cache regexp-alist)
-		 (dictree--fuzzy-match-cache fuzzy-match-alist)
-		 (dictree--fuzzy-complete-cache fuzzy-complete-alist)))
-	(when (funcall (nth 0 cache-details) dict)
-	  ;; convert hash table to alist
-	  (set (nth 1 cache-details)
-	       (let (alist)
-		 (maphash
-		  (lambda (key val)
-		    (push
-		     (cons key
-			   (cons
-			    (mapcar #'car (dictree--cache-results val))
-			    (dictree--cache-maxnum val)))
-		     alist))
-		(funcall (nth 0 cache-details) dict))
-		 alist))
-	  ;; generate code to reconstruct hash table from alist
-	  (setq
-	   hashcode
-	   (concat
-	    hashcode
-	    "(let ((cache (make-hash-table :test #'equal))\n"
-	    "      (trie (dictree--trie " dictname ")))\n"
-	    "  (mapc\n"
-	    "   (lambda (entry)\n"
-	    "     (puthash\n"
-	    "      (car entry)\n"
-	    "      (dictree--cache-create\n"
-	    "       (mapcar\n"
-	    "        (lambda (key)\n"
-	    "          (cons key\n"
-	    "                (trie-member\n"
-	    "                 trie (if (stringp key) key (car key)))))\n"
-	    "        (dictree--cache-results (cdr entry)))\n"
-	    "       (dictree--cache-maxnum (cdr entry)))\n"
-	    "      cache))\n"
-	    "   (" (symbol-name (nth 0 cache-details)) " " dictname "))\n"
-	    "  (setf (" (symbol-name (nth 0 cache-details)) " "
-	    dictname ")\n"
-	    "        cache))\n")))))
-
-
-    ;; --- write to file ---
     ;; generate the structure to save
-    (setq tmpdict (dictree--copy dict))
     (setf (dictree--trie tmpdict) tmptrie
 	  (dictree--name tmpdict) dictname
-	  (dictree--filename tmpdict) filename
+	  (dictree--filename tmpdict) nil
 	  (dictree--modified tmpdict) nil
 	  (dictree--meta-dict-list tmpdict) nil)
-    (unless (featurep 'hashtable-print-readable)
-      (setf (dictree--lookup-cache tmpdict)         lookup-alist
-	    (dictree--complete-cache tmpdict)       complete-alist
-	    (dictree--regexp-cache tmpdict)         regexp-alist
-	    (dictree--fuzzy-match-cache tmpdict)    fuzzy-match-alist
-	    (dictree--fuzzy-complete-cache tmpdict) fuzzy-complete-alist))
 
     ;; write lisp code that generates the dictionary object
     (let ((print-circle t) (print-level nil) (print-length nil))
@@ -3490,97 +3517,42 @@ is the prefix argument."
 	  (progn
 	    ;; transform trie to print form
 	    (trie-transform-for-print (dictree--trie tmpdict))
-	    (insert "(setq " dictname
-		    " '" (prin1-to-string tmpdict) ")\n"))
+	    (insert "(setq " dictname)
+	    (prin1 tmpdict (current-buffer))
+	    (insert ")\n"))
 	;; if dictionary doesn't use any custom save functions, tmpdict's trie
 	;; is identical to original dict, so transform it back to usable form
-	;; on write error
 	(unless (or (dictree--data-savefun dict)
 		    (dictree--plist-savefun dict))
 	  (trie-transform-from-read (dictree--trie tmpdict))))
-      (insert "(trie-transform-from-read (dictree--trie "
-	      dictname "))\n")
+      (insert "(trie-transform-from-read (dictree--trie " dictname "))\n"
+ 	      "(setf (dictree--filename " dictname ")\n"
+	      "      (file-name-sans-extension load-file-name))\n")
       (when hashcode (insert hashcode))
       (insert "(unless (memq " dictname " dictree-loaded-list)\n"
 	      "  (push " dictname " dictree-loaded-list))\n"))))
 
 
-
-(defun dictree--write-meta-dict-code (dict dictname filename)
+(defun dictree--write-meta-dict-code (dict)
   ;; Write code for meta-dictionary DICT to current buffer, giving it
   ;; the name DICTNAME and file FILENAME.
-  (let (hashcode tmpdict lookup-alist
-	complete-alist regexp-alist fuzzy-match-alist fuzzy-complete-alist)
+  (let ((dictname (dictree-name dict))
+	(tmpdict (dictree--meta-dict-copy dict))
+	hashcode)
 
-    ;; --- convert caches for writing to file ---
-    ;; hash tables have no read syntax in older Emacsen, so we convert
-    ;; them to alists for writing
+    ;; hash tables have no read syntax in older Emacsen
     (unless (featurep 'hashtable-print-readable)
-      ;; convert lookup cache hash table to an alist, if it exists
-      (when (dictree--meta-dict-lookup-cache dict)
-	(maphash (lambda (key val)
-		   (push (cons key (mapcar #'car val)) lookup-alist))
-		 (dictree--meta-dict-lookup-cache dict))
-	;; generate code to reconstruct the lookup hash table
-	(setq hashcode
-	      (concat
-	       hashcode
-	       "(let ((cache (make-hash-table :test #'equal)))\n"
-	       "  (mapc (lambda (entry)\n"
-	       "    (puthash (car entry) (cdr entry) cache))\n"
-	       "    (dictree--meta-dict-lookup-cache " dictname "))\n"
-	       "  (setf (dictree--meta-dict-lookup-cache " dictname ")\n"
-	       "        cache))\n")))
+      (setq hashcode
+	    (dictree--generate-meta-dict-hashcode dict tmpdict)))
 
-      ;; convert query caches, if they exist
-      (dolist (cache-details
-	       '((dictree--meta-dict-complete-cache       complete-alist)
-		 (dictree--meta-dict-regexp-cache         regexp-alist)
-		 (dictree--meta-dict-fuzzy-match-cache    fuzzy-match-alist)
-		 (dictree--meta-dict-fuzzy-complete-cache fuzzy-complete-alist)))
-	(when (funcall (nth 0 cache-details) dict)
-	  ;; convert hash table to alist
-	  (set (nth 1 cache-details)
-	       (let (alist)
-		 (maphash (lambda (key val) (push (cons key val) alist))
-			  (funcall (nth 0 cache-details) dict))
-		 alist))
-	  ;; generate code to reconstruct hash table from alist
-	  (setq
-	   hashcode
-	   (concat
-	    hashcode
-	    "(let ((cache (make-hash-table :test #'equal)))\n"
-	    "  (mapc (lambda (entry)\n"
-	    "    (puthash (car entry) (cdr entry) cache))\n"
-	    "    (" (symbol-name (nth 0 cache-details)) " "
-	            dictname "))\n"
-	    "  (setf (" (symbol-name (nth 0 cache-details)) " "
-	                dictname ")\n"
-	    "        cache))\n")))))
-
-
-    ;; --- write to file ---
     ;; generate the structure to save
-    (setq tmpdict (dictree--meta-dict-copy dict))
     (setf (dictree--meta-dict-name tmpdict) dictname
-	  (dictree--meta-dict-filename tmpdict) filename
+	  (dictree--meta-dict-filename tmpdict) nil
 	  (dictree--meta-dict-modified tmpdict) nil
 	  (dictree--meta-dict-meta-dict-list tmpdict) nil
 	  (dictree--meta-dict-dictlist tmpdict)
 	    (mapcar (lambda (dic) (intern (dictree-name dic)))
 		    (dictree--meta-dict-dictlist dict)))
-    (unless (featurep 'hashtable-print-readable)
-      (setf (dictree--meta-dict-lookup-cache tmpdict)
-	      lookup-alist
-	    (dictree--meta-dict-complete-cache tmpdict)
-	      complete-alist
-	    (dictree--meta-dict-regexp-cache tmpdict)
-	      regexp-alist
-	    (dictree--meta-dict-fuzzy-match-cache tmpdict)
-	      fuzzy-match-alist
-	    (dictree--meta-dict-fuzzy-complete-cache tmpdict)
-	      fuzzy-complete-alist))
 
     ;; write lisp code that generates the dictionary object
     (let ((print-circle t) (print-level nil) (print-length nil))
@@ -3589,18 +3561,219 @@ is the prefix argument."
       (mapc
        (lambda (dic)
 	 (insert "(unless (dictree-load \"" (dictree-filename dic) "\")\n"
-		 "        (error \"Failed to load dictionary \\\""
-		 (dictree-name dic) "\\\" required by meta-dict \\\""
-		 dictname "\\\"\"))\n"))
+		 "        (error \"Failed to load dictionary "
+		                  (dictree-name dic)
+		                  " required by meta-dict "
+		                  dictname "\"))\n"))
        (dictree--meta-dict-dictlist dict))
       (insert "(defvar " dictname " nil \"Dictionary " dictname ".\")\n"
-	      "(setq " dictname " " (prin1-to-string tmpdict) ")\n"
+	      "(setq " dictname " '")
+      (prin1 tmpdict (current-buffer))
+      (insert ")\n"
+ 	      "(setf (dictree--filename " dictname ")\n"
+	      "      (file-name-sans-extension load-file-name))\n"
 	      "(setf (dictree--meta-dict-dictlist " dictname ")\n"
-	      "      (mapcar #'eval (dictree--meta-dict-dictlist "
-	                            dictname ")))\n")
+	      "      (mapcar #'symbol-value (dictree--meta-dict-dictlist "
+	                                     dictname ")))\n")
       (when hashcode (insert hashcode))
       (insert "(unless (memq " dictname " dictree-loaded-list)"
 	      " (push " dictname " dictree-loaded-list))\n"))))
+
+
+
+(defun dictree--generate-writable-trie (dict)
+  ;; generate writable version of DICT's trie using DICT's data and plist save
+  ;; functions
+  (let ((trie
+	 (trie-create-custom
+	  (trie-comparison-function (dictree--trie dict))
+	  :createfun (trie--createfun (dictree--trie dict))
+	  :insertfun (trie--insertfun (dictree--trie dict))
+	  :deletefun (trie--deletefun (dictree--trie dict))
+	  :lookupfun (trie--lookupfun (dictree--trie dict))
+	  :mapfun (trie--mapfun (dictree--trie dict))
+	  :emptyfun (trie--emptyfun (dictree--trie dict))
+	  :stack-createfun (trie--stack-createfun (dictree--trie dict))
+	  :stack-popfun (trie--stack-popfun (dictree--trie dict))
+	  :stack-emptyfun (trie--stack-emptyfun (dictree--trie dict)))))
+    (trie-mapc
+     (lambda (key cell)
+       (trie-insert trie key
+		    (dictree--cell-create
+		     (funcall (or (dictree--data-savefun dict)
+				  #'identity)
+			      (dictree--cell-data cell))
+		     (funcall (or (dictree--plist-savefun dict)
+				  #'identity)
+			      (dictree--cell-plist cell)))))
+     (dictree--trie dict))
+    trie))
+
+
+(defun dictree--generate-triecode (dict)
+  ;; generate code to convert writable trie back to original form using DICT's
+  ;; data and plist load functions
+  (let ((dictname (dictree-name dict)))
+    (concat
+     " (trie-map\n"
+     "  (lambda (key cell)\n"
+     "    (dictree--cell-create\n"
+     (if (dictree--data-loadfun dict)
+	 (concat
+	  "(funcall (dictree--data-loadfun " dictname ")\n"
+	  "         (dictree--cell-data cell))\n")
+       "   (dictree--cell-data cell)\n")
+     (if (dictree--plist-loadfun dict)
+	 (concat
+	  "(funcall (dictree--plist-loadfun " dictname ")\n"
+	  "         (dictree--cell-plist cell))))\n")
+       "   (dictree--cell-plist cell)))\n")
+     "  (dictree--trie " dictname "))\n")))
+
+
+(defun dictree--generate-dict-hashcode (dict tmpdict)
+  ;; convert DICT's hash tables to alists stored in TMPDICT, and return code
+  ;; to convert these back
+  (let ((dictname (dictree-name dict))
+	hashcode lookup-alist complete-alist regexp-alist
+	fuzzy-match-alist fuzzy-complete-alist)
+
+    ;; convert lookup cache hash table to alist, if it exists
+    (when (dictree--lookup-cache dict)
+      (maphash
+       (lambda (key val)
+	 (push
+	  (cons key
+		(cons (mapcar #'car (dictree--cache-results val))
+		      (dictree--cache-maxnum val)))
+	  lookup-alist))
+       (dictree--lookup-cache dict))
+      ;; generate code to reconstruct the lookup hash table
+      (setq hashcode
+	    (concat
+	     hashcode
+	     "(let ((lookup-cache (make-hash-table :test #'equal))\n"
+	     "      (trie (dictree--trie " dictname ")))\n"
+	     "  (mapc\n"
+	     "   (lambda (entry)\n"
+	     "     (puthash\n"
+	     "      (car entry)\n"
+	     "      (dictree--cache-create\n"
+	     "       (mapcar\n"
+	     "        (lambda (key)\n"
+	     "          (cons key (trie-member trie key)))\n"
+	     "        (dictree--cache-results (cdr entry)))\n"
+	     "       (dictree--cache-maxnum (cdr entry)))\n"
+	     "      lookup-cache))\n"
+	     "   (dictree--lookup-cache " dictname "))\n"
+	     "  (setf (dictree--lookup-cache " dictname ")\n"
+	     "        lookup-cache))\n")))
+
+    ;; convert query caches, if they exist
+    (dolist (cache-details
+	     '((dictree--complete-cache complete-alist)
+	       (dictree--regexp-cache regexp-alist)
+	       (dictree--fuzzy-match-cache fuzzy-match-alist)
+	       (dictree--fuzzy-complete-cache fuzzy-complete-alist)))
+      (when (funcall (nth 0 cache-details) dict)
+	;; convert hash table to alist
+	(set (nth 1 cache-details)
+	     (let (alist)
+	       (maphash
+		(lambda (key val)
+		  (push
+		   (cons key
+			 (cons
+			  (mapcar #'car (dictree--cache-results val))
+			  (dictree--cache-maxnum val)))
+		   alist))
+		(funcall (nth 0 cache-details) dict))
+	       alist))
+	;; generate code to reconstruct hash table from alist
+	(setq hashcode
+	      (concat
+	       hashcode
+	       "(let ((cache (make-hash-table :test #'equal))\n"
+	       "      (trie (dictree--trie " dictname ")))\n"
+	       "  (mapc\n"
+	       "   (lambda (entry)\n"
+	       "     (puthash\n"
+	       "      (car entry)\n"
+	       "      (dictree--cache-create\n"
+	       "       (mapcar\n"
+	       "        (lambda (key)\n"
+	       "          (cons key\n"
+	       "                (trie-member\n"
+	       "                 trie (if (stringp key) key (car key)))))\n"
+	       "        (dictree--cache-results (cdr entry)))\n"
+	       "       (dictree--cache-maxnum (cdr entry)))\n"
+	       "      cache))\n"
+	       "   (" (symbol-name (nth 0 cache-details)) " " dictname "))\n"
+	       "  (setf (" (symbol-name (nth 0 cache-details)) " " dictname ")\n"
+	       "        cache))\n"))))
+
+    ;; replace TMPDICT's caches with alists
+    (setf (dictree--lookup-cache tmpdict)         lookup-alist
+	  (dictree--complete-cache tmpdict)       complete-alist
+	  (dictree--regexp-cache tmpdict)         regexp-alist
+	  (dictree--fuzzy-match-cache tmpdict)    fuzzy-match-alist
+	  (dictree--fuzzy-complete-cache tmpdict) fuzzy-complete-alist)
+    ;; return generated conversion code
+    hashcode))
+
+
+(defun dictree--generate-meta-dict-hashcode (dict tmpdict)
+  ;; hash tables have no read syntax in older Emacsen, so we convert
+  ;; the dictionary caches to alists for writing
+  (let ((dictname (dictree-name dict))
+	hashcode lookup-alist complete-alist regexp-alist
+	fuzzy-match-alist fuzzy-complete-alist)
+    (when (dictree--meta-dict-lookup-cache dict)
+      (maphash (lambda (key val)
+		 (push (cons key (mapcar #'car val)) lookup-alist))
+	       (dictree--meta-dict-lookup-cache dict))
+      ;; generate code to reconstruct the lookup hash table
+      (setq hashcode
+	    (concat
+	     hashcode
+	     "(let ((cache (make-hash-table :test #'equal)))\n"
+	     "  (mapc (lambda (entry)\n"
+	     "    (puthash (car entry) (cdr entry) cache))\n"
+	     "    (dictree--meta-dict-lookup-cache " dictname "))\n"
+	     "  (setf (dictree--meta-dict-lookup-cache " dictname ")\n"
+	     "        cache))\n")))
+
+    ;; convert query caches, if they exist
+    (dolist (cache-details
+	     '((dictree--meta-dict-complete-cache       complete-alist)
+	       (dictree--meta-dict-regexp-cache         regexp-alist)
+	       (dictree--meta-dict-fuzzy-match-cache    fuzzy-match-alist)
+	       (dictree--meta-dict-fuzzy-complete-cache fuzzy-complete-alist)))
+      (when (funcall (nth 0 cache-details) dict)
+	;; convert hash table to alist
+	(set (nth 1 cache-details)
+	     (let (alist)
+	       (maphash (lambda (key val) (push (cons key val) alist))
+			(funcall (nth 0 cache-details) dict))
+	       alist))
+	;; generate code to reconstruct hash table from alist
+	(setq hashcode
+	      (concat
+	       hashcode
+	       "(let ((cache (make-hash-table :test #'equal)))\n"
+	       "  (mapc (lambda (entry)\n"
+	       "    (puthash (car entry) (cdr entry) cache))\n"
+	       "    (" (symbol-name (nth 0 cache-details)) " " dictname "))\n"
+	       "  (setf (" (symbol-name (nth 0 cache-details)) " " dictname ")\n"
+	       "        cache))\n"))))
+
+    ;; replace TMPDICT's caches with alists
+    (setf (dictree--lookup-cache tmpdict)         lookup-alist
+	  (dictree--complete-cache tmpdict)       complete-alist
+	  (dictree--regexp-cache tmpdict)         regexp-alist
+	  (dictree--fuzzy-match-cache tmpdict)    fuzzy-match-alist
+	  (dictree--fuzzy-complete-cache tmpdict) fuzzy-complete-alist)
+    hashcode))
 
 
 
@@ -3608,10 +3781,10 @@ is the prefix argument."
 ;; ----------------------------------------------------------------
 ;;                Dumping and restoring contents
 
-(defun dictree-populate-from-file
-  (dict file
-   &optional insert-function key-loadfun data-loadfun plist-loadfun
-   balance)
+(defun* dictree-populate-from-file
+    (dict file
+	  &key insert-function key-loadfun data-loadfun plist-loadfun
+	  balance)
   "Populate dictionary DICT from the key list in file FILE.
 
 Each line of FILE should contain a key, either a string
@@ -3641,9 +3814,7 @@ are created when using a trie that is not self-balancing, see
   (interactive (list (read-dict "Dictionary: ")
 		     (read-file-name "File to populate from: "
 				     nil "" t)))
-  (when (and (called-interactively-p 'any) (symbolp dict))
-    (setq dict (symbol-value dict)))
-
+  (when (symbolp dict) (setq dict (symbol-value dict)))
   (if (and (called-interactively-p 'any) (string= file ""))
       (message "No file specified; dictionary %s NOT populated"
 	       (dictree-name dict))
@@ -3663,105 +3834,111 @@ are created when using a trie that is not self-balancing, see
 	;; insert the keys starting from the median to ensure a
 	;; reasonably well-balanced tree
 	(let* ((lines (count-lines (point-min) (point-max)))
-	       (midpt (+ (/ lines 2) (mod lines 2)))
-	       entry)
-	  (message "Inserting keys in %s...(1 of %d)"
-		   (dictree-name dict) lines)
-	  ;; insert the median key and set the dictionary's modified
-	  ;; flag
-	  (if balance
-	      (dictree--goto-line midpt)
-	    (goto-char (point-min)))
-	  (when (setq entry
-		      (condition-case nil
-			  (dictree--read-line key-loadfun data-loadfun
-					      plist-loadfun)
-			(error (error "Error reading line %d of %s"
-				      midpt file))))
-	    (dictree-insert dict (car entry) (nth 1 entry)
-			    insert-function)
-	    (setf (dictree--cell-plist
-		   (dictree--lookup dict (car entry) nil))
-		  (nth 2 entry)))
-	  ;; insert keys successively further away from the median in
-	  ;; both directions
-	  (dotimes (i (1- (if balance midpt lines)))
-	    (if balance
-		(dictree--goto-line (+ midpt i 1))
-	      (forward-line 1))
-	    (when (setq entry
-			(condition-case nil
-			    (dictree--read-line key-loadfun data-loadfun
-						plist-loadfun)
-			  (error (error "Error reading line %d of %s"
-					(+ midpt i 1) file))))
-	      (dictree-insert dict (car entry) (nth 1 entry)
-			      insert-function)
-	      (setf (dictree--cell-plist
-		     (dictree--lookup dict (car entry) nil))
-		    (nth 2 entry)))
-	    (when (= 49 (mod i 50))
-	      (message "Inserting keys in %s...(%d of %d)"
-		       (dictree-name dict)
-		       (if balance (+ (* 2 i) 2) i)
-		       lines))
-	    (when balance
+	       (midpt (+ (/ lines 2) (mod lines 2))))
+	  (message "Inserting keys in %s...(1 of %d)" (dictree-name dict) lines)
+
+	  ;; insert the median key and set the dictionary's modified flag
+	  (cond
+	   (balance
+	    (dictree--goto-line midpt)
+	    (dictree--populate dict midpt file
+			       insert-function key-loadfun data-loadfun plist-loadfun)
+	    ;; insert keys successively further away from the median in both directions
+	    (dotimes (i (1- midpt))
+	      (dictree--goto-line (+ midpt i 1))
+	      (dictree--populate dict (+ midpt i 1) file
+				 insert-function key-loadfun data-loadfun plist-loadfun)
+	      (when (= 49 (mod i 50))
+		(message "Inserting keys in %s...(%d of %d)"
+			 (dictree-name dict) (+ (* 2 i) 2) lines))
 	      (dictree--goto-line (- midpt i 1))
-	      (when (setq entry
-			  (condition-case nil
-			      (dictree--read-line key-loadfun data-loadfun
-						  plist-loadfun)
-			    (error (error "Error reading line %d of %s"
-					  (- midpt i 1) file))))
-		(dictree-insert dict (car entry)
-				(nth 1 entry) insert-function)
-		(setf
-		 (dictree--cell-plist
-		  (dictree--lookup dict (car entry) nil))
-		 (nth 2 entry)))))
+	      (dictree--populate dict (- midpt i 1) file
+				 insert-function key-loadfun data-loadfun plist-loadfun))
+	    ;; if inserting from mid-point out, and file contains an even
+	    ;; number of keys, we still have to add the last one
+	    (when (= 0 (mod lines 2))
+	      (dictree--goto-line lines)
+	      (dictree--populate dict lines file
+				 insert-function key-loadfun data-loadfun plist-loadfun)))
 
-	  ;; if inserting from mid-point out, and file contains an even
-	  ;; number of keys, we still have to add the last one
-	  (when (and balance (= 0 (mod lines 2)))
-	    (dictree--goto-line lines)
-	    (when (setq entry
-			(condition-case nil
-			    (dictree--read-line key-loadfun data-loadfun
-						plist-loadfun)
-			  (error (error "Error reading line %d of %s"
-					lines file))))
-	      (dictree-insert dict (car entry) (nth 1 entry)
-			      insert-function)
-	      (setf (dictree--cell-plist
-		     (dictree--lookup dict (car entry) nil))
-		    (nth 2 entry))))
+	   (t
+	    (goto-char (point-min))
+	    (dotimes (i lines)
+	      (dictree--populate dict (1+ i) file
+				 insert-function key-loadfun data-loadfun plist-loadfun)
+	      (when (= 49 (mod i 50))
+		(message "Inserting keys in %s...(%d of %d)" (dictree-name dict) (1+ i) lines))
+	      (forward-line 1)))
+	   ))
 
-	  (message "Inserting keys in %s...done" (dictree-name dict)))
+	(message "Inserting keys in %s...done" (dictree-name dict))
 	(kill-buffer buff)))))
 
 
+(defun dictree--populate (dict &optional line file
+			       insert-function key-loadfun data-loadfun plist-loadfun)
+  ;; Read entry from current line of current buffer, and insert it in DICT.
+  (destructuring-bind (key data plist)
+      (dictree--read-line line file key-loadfun data-loadfun plist-loadfun)
+    ;; insert entry in DICT
+    (dictree-insert dict key data insert-function)
+    (setf (dictree--cell-plist (dictree--lookup dict key nil)) plist)))
+
 
 (defun dictree--read-line
-  (&optional key-loadfun data-loadfun plist-loadfun)
+  (&optional line file key-loadfun data-loadfun plist-loadfun)
   ;; Return a list containing the key, data (if any, otherwise nil) and
   ;; property list (ditto) at the current line of the current buffer.
   (save-excursion
     (let (key data plist)
       ;; read key
       (beginning-of-line)
-      (when (setq key (read (current-buffer)))
-	(when key-loadfun (setq key (funcall key-loadfun key)))
+      (when (setq key (condition-case nil
+			  (read (current-buffer))
+			(error (error "Error reading key from line %d of %s"
+				      line file))))
+	(when key-loadfun
+	  (setq key (condition-case nil
+			(funcall key-loadfun key)
+		      (error (error "Error calling KEY-LOADFUN on key read from line %d of %s"
+				    line file)))))
 	;; if there's anything after the key, use it as data
 	(unless (eq (line-end-position) (point))
-	  (setq data (read (current-buffer))))
-	(when data-loadfun (setq data (funcall data-loadfun data)))
+	  (setq data (condition-case nil
+			 (read (current-buffer))
+		       (error (error "Error reading data from line %d of %s"
+				     line file)))))
+	(when data-loadfun
+	  (setq data
+		(condition-case nil
+		    (funcall data-loadfun data)
+		  (error (error "Error calling DATA-LOADFUN on data read from line %d of %s"
+				line file)))))
 	;; if there's anything after the data, use it as the property list
 	(unless (eq (line-end-position) (point))
-	  (setq plist (read (current-buffer))))
-	(when plist-loadfun (funcall plist-loadfun plist))
+	  (setq plist
+		(condition-case nil
+		    (read (current-buffer))
+		  (error (error "Error reading plist from line %d of %s"
+				line file)))))
+	(when plist-loadfun
+	  (setq plist
+		(condition-case nil
+		    (funcall plist-loadfun plist)
+		  (error (error "Error calling PLIST-LOADFUN on plist read from line %d of %s"
+				line file)))))
+
+	;; sanity check what we read from file
+	(if (symbolp key)
+	    (setq key (symbol-name key))
+	  (unless (or (vectorp key) (stringp key) (listp key))
+	    (error "Invalid key at line %d of %s - must be string, vector, list or symbol"
+		   line file)))
+	(unless (and (listp plist) (cl-evenp (length plist)))
+	  (error "Invalid plist at line %d of %s" line file))
+
 	;; return what we've read
 	(list key data plist)))))
-
 
 
 (defun dictree-dump-to-buffer (dict &optional buffer type)
@@ -3779,15 +3956,13 @@ Note that if the data does not have a read syntax, the dumped
 data can not be used to recreate the dictionary using
 `dictree-populate-from-file'.
 
-Interactively, DICT and BUFFER are read from the mini-buffer,
-TYPE is always `string'."
+Interactively, DICT and BUFFER are read from the mini-buffer."
   (interactive (list (read-dict "Dictionary: ")
 		     (read-buffer
 		      "Buffer to dump to (defaults to current): "
 		      (buffer-name (current-buffer)))
-		     'string))
-  (when (and (called-interactively-p 'any) (symbolp dict))
-    (setq dict (symbol-value dict)))
+		     'vector))
+  (when (symbolp dict) (setq dict (symbol-value dict)))
 
   ;; select the buffer, creating it if necessary
   (if buffer
@@ -3828,7 +4003,7 @@ TYPE is always `string'."
 	 (insert " " (prin1-to-string plist)))
        (insert "\n")
        (setq count (1+ count)))
-     dict type)  ; dictree-mapc target
+     dict type)  ; dictree--mapc target
 
     (message "Dumping keys from %s to %s...done"
 	     (dictree-name dict) (buffer-name buffer)))
@@ -3854,8 +4029,7 @@ Interactively, DICT and FILE are read from the mini-buffer,
 OVERWRITE is the prefix argument, and TYPE is always string."
   (interactive (list (read-dict "Dictionary: ")
 		     (read-file-name "File to dump to: " nil "")))
-  (when (and (called-interactively-p 'any) (symbolp dict))
-    (setq dict (symbol-value dict)))
+  (when (symbolp dict) (setq dict (symbol-value dict)))
 
   (if (and (called-interactively-p 'any) (string= filename ""))
       (message "Dictionary %s NOT dumped" (dictree-name dict))
